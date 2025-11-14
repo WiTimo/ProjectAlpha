@@ -6,7 +6,8 @@ use super::rolling::{Ewma, RollingStatistic, WindowedMean};
 /// Helper struct that keeps depth/volume/count normalizers causal.
 #[derive(Debug, Clone)]
 pub struct CausalScaler {
-    depth: Normalizer,
+    depth_bid: Normalizer,
+    depth_ask: Normalizer,
     volume: Normalizer,
     count: Normalizer,
     epsilon: f64,
@@ -15,7 +16,8 @@ pub struct CausalScaler {
 impl CausalScaler {
     pub fn new(cfg: &NormalizationConfig) -> Self {
         Self {
-            depth: Normalizer::from_cfg(&cfg.rolling_depth),
+            depth_bid: Normalizer::from_cfg(&cfg.rolling_depth),
+            depth_ask: Normalizer::from_cfg(&cfg.rolling_depth),
             volume: Normalizer::from_cfg(&cfg.rolling_volume),
             count: Normalizer::from_cfg(&cfg.rolling_count),
             epsilon: cfg.log_epsilon,
@@ -23,7 +25,15 @@ impl CausalScaler {
     }
 
     pub fn normalize_depth(&mut self, value: f64) -> ScaledValue {
-        self.depth.normalize(value, self.epsilon)
+        self.depth_bid.normalize(value, self.epsilon)
+    }
+
+    pub fn normalize_depth_bid(&mut self, value: f64) -> ScaledValue {
+        self.depth_bid.normalize(value, self.epsilon)
+    }
+
+    pub fn normalize_depth_ask(&mut self, value: f64) -> ScaledValue {
+        self.depth_ask.normalize(value, self.epsilon)
     }
 
     pub fn normalize_volume(&mut self, value: f64) -> ScaledValue {

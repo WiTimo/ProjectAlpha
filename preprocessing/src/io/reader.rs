@@ -25,7 +25,7 @@ pub struct FileEventReader {
 }
 
 impl FileEventReader {
-    pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
+    pub fn new(path: impl Into<PathBuf>, levels: usize) -> Result<Self> {
         let path = path.into();
         let file = File::open(&path)
             .with_context(|| format!("Failed to open input file {}", path.display()))?;
@@ -33,7 +33,7 @@ impl FileEventReader {
         Ok(Self {
             path,
             lines: reader.lines(),
-            quote_state: QuoteState::default(),
+            quote_state: QuoteState::new(levels.max(1)),
         })
     }
 }
@@ -48,13 +48,15 @@ impl EventReader for FileEventReader {
             }
 
             if let Some(row) = parse_l2_line(&line)? {
-                if let Some((bid, ask)) = self.quote_state.update(row) {
+                if let Some(snapshot) = self.quote_state.update(row) {
                     let quote = QuoteEvent {
-                        best_bid_price: bid.price,
-                        best_bid_size: bid.size,
-                        best_ask_price: ask.price,
-                        best_ask_size: ask.size,
-                        mid_price: 0.5 * (bid.price + ask.price),
+                        best_bid_price: snapshot.bid.price,
+                        best_bid_size: snapshot.bid.size,
+                        best_ask_price: snapshot.ask.price,
+                        best_ask_size: snapshot.ask.size,
+                        mid_price: 0.5 * (snapshot.bid.price + snapshot.ask.price),
+                        bids: snapshot.bids,
+                        asks: snapshot.asks,
                     };
                     return Ok(Some(MarketEvent {
                         timestamp: row.timestamp,
@@ -80,40 +82,67 @@ impl EventReader for FileEventReader {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct QuoteState {
-    best_bid: Option<BookLevel>,
-    best_ask: Option<BookLevel>,
+    bids: Vec<BookLevel>,
+    asks: Vec<BookLevel>,
+}
+
+#[derive(Debug, Clone)]
+struct QuoteSnapshot {
+    bid: BookLevel,
+    ask: BookLevel,
+    bids: Vec<BookLevel>,
+    asks: Vec<BookLevel>,
 }
 
 impl QuoteState {
-    fn update(&mut self, row: ParsedRow) -> Option<(BookLevel, BookLevel)> {
-        match row.side {
-            BookSide::Bid => match row.operation {
-                L2Operation::Add | L2Operation::Update => {
-                    self.best_bid = Some(BookLevel {
-                        price: row.price,
-                        size: row.size,
-                    })
-                }
-                L2Operation::Remove => self.best_bid = None,
-            },
-            BookSide::Ask => match row.operation {
-                L2Operation::Add | L2Operation::Update => {
-                    self.best_ask = Some(BookLevel {
-                        price: row.price,
-                        size: row.size,
-                    })
-                }
-                L2Operation::Remove => self.best_ask = None,
-            },
+    fn new(levels: usize) -> Self {
+        Self {
+            bids: vec![BookLevel::default(); levels],
+            asks: vec![BookLevel::default(); levels],
         }
+    }
 
-        match (self.best_bid, self.best_ask) {
-            (Some(bid), Some(ask)) => Some((bid, ask)),
+    fn update(&mut self, row: ParsedRow) -> Option<QuoteSnapshot> {
+        self.apply(row);
+        let bid = self.bids.get(0).copied();
+        let ask = self.asks.get(0).copied();
+        match (bid, ask) {
+            (Some(b), Some(a)) if is_valid_level(b) && is_valid_level(a) => Some(QuoteSnapshot {
+                bid: b,
+                ask: a,
+                bids: self.bids.clone(),
+                asks: self.asks.clone(),
+            }),
             _ => None,
         }
     }
+
+    fn apply(&mut self, row: ParsedRow) {
+        let levels = match row.side {
+            BookSide::Bid => &mut self.bids,
+            BookSide::Ask => &mut self.asks,
+        };
+        if row.level >= levels.len() {
+            return;
+        }
+        match row.operation {
+            L2Operation::Add | L2Operation::Update => {
+                levels[row.level] = BookLevel {
+                    price: row.price,
+                    size: row.size,
+                };
+            }
+            L2Operation::Remove => {
+                levels[row.level] = BookLevel::default();
+            }
+        }
+    }
+}
+
+fn is_valid_level(level: BookLevel) -> bool {
+    level.price.is_finite() && level.size.is_finite() && level.price > 0.0 && level.size > 0.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +157,7 @@ struct ParsedRow {
     timestamp: OffsetDateTime,
     side: BookSide,
     operation: L2Operation,
+    level: usize,
     price: f64,
     size: f64,
 }
@@ -174,9 +204,6 @@ fn parse_l2_line(line: &str) -> Result<Option<ParsedRow>> {
         .trim()
         .parse()
         .unwrap_or(usize::MAX);
-    if level != 0 {
-        return Ok(None);
-    }
 
     // Market maker ID (ignored but consume field)
     let _ = fields.next();
@@ -190,6 +217,7 @@ fn parse_l2_line(line: &str) -> Result<Option<ParsedRow>> {
         timestamp,
         side,
         operation,
+        level,
         price,
         size,
     }))
@@ -256,7 +284,8 @@ mod tests {
     #[test]
     fn parse_line_skips_non_l2_and_levels() -> Result<()> {
         assert!(parse_l2_line("L1;0;20230101;0;0;0;;1;1")?.is_none());
-        assert!(parse_l2_line("L2;0;20230101000000;0;0;1;;1;1")?.is_none());
+        let row = parse_l2_line("L2;0;20230101000000;0;0;1;;1;1")?.expect("row");
+        assert_eq!(row.level, 1);
         Ok(())
     }
 
@@ -275,7 +304,7 @@ mod tests {
         writeln!(file, "L2;0;20231221060001;2720000;0;0;;17048;1")?;
         writeln!(file, "L2;1;20231221060001;2720000;0;0;;17044;1")?;
 
-        let mut reader = FileEventReader::new(file.path())?;
+        let mut reader = FileEventReader::new(file.path(), 1)?;
         let event = reader.next_event()?.expect("expected quote event");
         match event.kind {
             MarketEventKind::Quote(quote) => {
@@ -293,7 +322,7 @@ mod tests {
         let mut file = NamedTempFile::new()?;
         writeln!(file, "L1;1;20231221060001;2720000;17045,5;3")?;
 
-        let mut reader = FileEventReader::new(file.path())?;
+        let mut reader = FileEventReader::new(file.path(), 1)?;
         let event = reader.next_event()?.expect("expected trade event");
         match event.kind {
             MarketEventKind::Trade(trade) => {

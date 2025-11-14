@@ -161,6 +161,8 @@ impl BarAccumulator {
         if quote.best_ask_size.is_finite() {
             self.best_ask_size_close = Some(quote.best_ask_size);
         }
+
+        self.book.apply_quote(&quote.bids, &quote.asks);
     }
 
     fn update_trade(&mut self, trade: &TradeEvent) {

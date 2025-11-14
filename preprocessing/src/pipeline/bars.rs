@@ -52,7 +52,7 @@ pub fn build_bars(events: &[MarketEvent], resolution: Resolution, levels: usize)
 mod tests {
     use super::*;
     use crate::domain::events::{MarketEvent, MarketEventKind, QuoteEvent, TradeEvent};
-    use crate::domain::order_book::BookSide;
+    use crate::domain::order_book::{BookLevel, BookSide};
     use time::macros::datetime;
 
     fn quote_event(
@@ -70,6 +70,14 @@ mod tests {
                 best_ask_price: ask,
                 best_ask_size: ask_size,
                 mid_price: 0.5 * (bid + ask),
+                bids: vec![BookLevel {
+                    price: bid,
+                    size: bid_size,
+                }],
+                asks: vec![BookLevel {
+                    price: ask,
+                    size: ask_size,
+                }],
             }),
         }
     }

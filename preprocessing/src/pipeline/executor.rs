@@ -77,7 +77,7 @@ impl PreprocessingPipeline {
                 input_file.display()
             );
 
-            let events = read_events(input_file)?;
+            let events = read_events(input_file, self.config.instrument.levels)?;
             if events.is_empty() {
                 println!(
                     "{} yielded no market events; skipping file",
@@ -298,8 +298,8 @@ const fn encode_outcome(outcome: LabelOutcome) -> i8 {
     }
 }
 
-fn read_events(path: &Path) -> Result<Vec<MarketEvent>> {
-    let mut reader = FileEventReader::new(path)?;
+fn read_events(path: &Path, levels: usize) -> Result<Vec<MarketEvent>> {
+    let mut reader = FileEventReader::new(path, levels)?;
     let mut events = Vec::new();
     while let Some(event) = reader.next_event()? {
         events.push(event);

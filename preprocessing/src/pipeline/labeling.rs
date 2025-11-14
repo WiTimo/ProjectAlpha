@@ -162,6 +162,7 @@ impl SplitSummary {
 mod tests {
     use super::*;
     use crate::domain::events::{MarketEvent, MarketEventKind, QuoteEvent};
+    use crate::domain::order_book::BookLevel;
     use time::macros::datetime;
 
     fn quote_event(ts: time::OffsetDateTime, mid: f64) -> MarketEvent {
@@ -173,6 +174,14 @@ mod tests {
                 best_ask_price: mid + 0.25,
                 best_ask_size: 1.0,
                 mid_price: mid,
+                bids: vec![BookLevel {
+                    price: mid - 0.25,
+                    size: 1.0,
+                }],
+                asks: vec![BookLevel {
+                    price: mid + 0.25,
+                    size: 1.0,
+                }],
             }),
         }
     }

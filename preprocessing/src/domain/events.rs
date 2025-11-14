@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use super::order_book::BookSide;
+use super::order_book::{BookLevel, BookSide};
 
 /// Canonical market data event processed by the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +27,8 @@ pub struct QuoteEvent {
     pub best_ask_price: f64,
     pub best_ask_size: f64,
     pub mid_price: f64,
+    pub bids: Vec<BookLevel>,
+    pub asks: Vec<BookLevel>,
 }
 
 /// Trade print enriched with simple aggressor tagging.

@@ -29,7 +29,12 @@ from tqdm import tqdm
 FEATURE_COLUMNS = [
     "mid_return_bar",
     "spread_ticks",
+    "spread_change_ticks",
+    "mid_range_rel",
     "imbalance_best",
+    "cum_bid_size_l_rel",
+    "cum_ask_size_l_rel",
+    "imbalance_l",
     "trade_volume_sum_rel",
     "trade_count_log",
     "rv_log",
@@ -37,6 +42,16 @@ FEATURE_COLUMNS = [
 
 LABEL_MAP = {1: 1.0, 0: 0.0, -1: np.nan}
 MIN_STD = 1e-9
+WINSOR_COLUMNS = [
+    "spread_ticks",
+    "spread_change_ticks",
+    "mid_range_rel",
+    "cum_bid_size_l_rel",
+    "cum_ask_size_l_rel",
+    "trade_volume_sum_rel",
+]
+WINSOR_LOWER = 0.001
+WINSOR_UPPER = 0.999
 
 
 @dataclass
@@ -45,6 +60,39 @@ class DatasetSplits:
     val: pd.DataFrame
     test: pd.DataFrame
     feature_cols: List[str]
+
+
+def summarize_split(name: str, df: pd.DataFrame) -> Dict[str, float]:
+    if df.empty:
+        return {
+            "rows": 0,
+            "hit_rate": float("nan"),
+            "mean_spread": float("nan"),
+            "mean_depth": float("nan"),
+            "mean_volume": float("nan"),
+        }
+    hit_rate = df["target"].mean()
+    summary = {
+        "rows": int(len(df)),
+        "hit_rate": hit_rate,
+        "mean_spread": df.get("spread_ticks", pd.Series(dtype=float)).mean(),
+        "mean_depth": (
+            df.get("cum_bid_size_l_rel", pd.Series(dtype=float))
+            .add(df.get("cum_ask_size_l_rel", pd.Series(dtype=float)), fill_value=0.0)
+            .mean()
+        ),
+        "mean_volume": df.get("trade_volume_sum_rel", pd.Series(dtype=float)).mean(),
+    }
+    logging.info(
+        "Split %s -> rows=%d hit_rate=%.3f mean_spread=%.2f mean_depth=%.2f mean_volume=%.2f",
+        name,
+        summary["rows"],
+        summary["hit_rate"],
+        summary["mean_spread"],
+        summary["mean_depth"],
+        summary["mean_volume"],
+    )
+    return summary
 
 
 class SequenceDataset(Dataset):
@@ -173,9 +221,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--limit-files",
+        "--limit",
         type=int,
         default=4,
-        help="Maximum number of Parquet files to load per split",
+        help="Maximum number of Parquet files to load per split (0 = all)",
+    )
+    parser.add_argument(
+        "--test-limit-files",
+        type=int,
+        default=0,
+        help="Maximum number of Parquet files to load for the external test root (0 = all)",
     )
     parser.add_argument(
         "--sequence-len",
@@ -218,6 +273,34 @@ def parse_args() -> argparse.Namespace:
         "--skip-baseline",
         action="store_true",
         help="Skip logistic-regression baseline evaluation",
+    )
+    parser.add_argument(
+        "--split-mode",
+        choices=["rows", "days"],
+        default="days",
+        help="Split by raw rows (legacy) or by full calendar days using source files",
+    )
+    parser.add_argument(
+        "--val-days",
+        type=int,
+        default=5,
+        help="Number of full days reserved for validation when using --split-mode=days",
+    )
+    parser.add_argument(
+        "--test-days",
+        type=int,
+        default=5,
+        help="Number of full days reserved for testing when using --split-mode=days and no external test root",
+    )
+    parser.add_argument(
+        "--feature-root-test",
+        type=Path,
+        help="Optional root directory containing held-out test Parquets (mirrors --feature-root layout)",
+    )
+    parser.add_argument(
+        "--label-root-test",
+        type=Path,
+        help="Optional label directory for the held-out test files (defaults to --label-root)",
     )
     parser.add_argument(
         "--device",
@@ -333,18 +416,124 @@ def data_quality_checks(df: pd.DataFrame, feature_cols: List[str]) -> None:
     )
 
 
-def chronological_split(
-    df: pd.DataFrame, train_ratio: float = 0.7, val_ratio: float = 0.15
-) -> DatasetSplits:
+def ensure_feature_columns(df: pd.DataFrame, feature_cols: List[str]) -> None:
+    missing = [col for col in feature_cols if col not in df.columns]
+    if missing:
+        raise KeyError(
+            "Missing expected feature columns: " + ", ".join(sorted(missing))
+        )
+
+
+def winsorize_features(
+    train: pd.DataFrame,
+    val: pd.DataFrame,
+    test: pd.DataFrame,
+    columns: Iterable[str],
+    lower: float,
+    upper: float,
+) -> None:
+    bounds: Dict[str, Tuple[float, float]] = {}
+    for col in columns:
+        if col not in train.columns:
+            continue
+        q_low = train[col].quantile(lower)
+        q_high = train[col].quantile(upper)
+        if not np.isfinite(q_low) or not np.isfinite(q_high):
+            continue
+        if q_low > q_high:
+            q_low, q_high = q_high, q_low
+        bounds[col] = (q_low, q_high)
+    if not bounds:
+        return
+    logging.info(
+        "Winsorizing features using train quantiles (%.3f-%.3f): %s",
+        lower,
+        upper,
+        ", ".join(sorted(bounds.keys())),
+    )
+    for frame in (train, val, test):
+        for col, (q_low, q_high) in bounds.items():
+            if col in frame.columns:
+                frame.loc[:, col] = frame[col].clip(q_low, q_high)
+
+
+def split_by_rows(
+    df: pd.DataFrame, train_ratio: float, val_ratio: float
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     n = len(df)
+    if n == 0:
+        raise ValueError("Dataset is empty; cannot split")
     train_end = int(n * train_ratio)
     val_end = train_end + int(n * val_ratio)
-    return DatasetSplits(
-        train=df.iloc[:train_end].copy(),
-        val=df.iloc[train_end:val_end].copy(),
-        test=df.iloc[val_end:].copy(),
+    val_end = min(val_end, n)
+    train = df.iloc[:train_end].copy()
+    val = df.iloc[train_end:val_end].copy()
+    test = df.iloc[val_end:].copy()
+    return train, val, test
+
+
+def split_by_days(
+    df: pd.DataFrame, val_days: int, test_days: int
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if "source_file" not in df.columns:
+        raise KeyError("source_file column missing; day-based split unavailable")
+    per_file = df.groupby("source_file")["start_timestamp_ns"].min().sort_values()
+    stems = list(per_file.index)
+    if not stems:
+        raise ValueError("No source files available for splitting")
+    total_required = val_days + test_days
+    if len(stems) <= total_required:
+        raise ValueError(
+            "Not enough distinct days (%d) for val/test requirements (%d)"
+            % (len(stems), total_required)
+        )
+
+    test_files = stems[-test_days:] if test_days > 0 else []
+    remaining = stems[: len(stems) - test_days]
+    val_files = remaining[-val_days:] if val_days > 0 else []
+    train_files = remaining[: len(remaining) - val_days]
+    if not train_files:
+        raise ValueError("Day-based split produced empty training set")
+
+    def select(files: List[str]) -> pd.DataFrame:
+        if not files:
+            return pd.DataFrame(columns=df.columns)
+        subset = df[df["source_file"].isin(files)].copy()
+        subset.sort_values("start_timestamp_ns", inplace=True)
+        subset.reset_index(drop=True, inplace=True)
+        return subset
+
+    return select(train_files), select(val_files), select(test_files)
+
+
+def build_splits(
+    df: pd.DataFrame,
+    split_mode: str,
+    train_ratio: float,
+    val_ratio: float,
+    val_days: int,
+    test_days: int,
+    external_test: Optional[pd.DataFrame] = None,
+) -> DatasetSplits:
+    if split_mode == "rows":
+        train, val, test = split_by_rows(df, train_ratio, val_ratio)
+    else:
+        local_test_days = 0 if external_test is not None else test_days
+        train, val, test = split_by_days(df, val_days, local_test_days)
+    if external_test is not None:
+        test = external_test.copy()
+        test.sort_values("start_timestamp_ns", inplace=True)
+        test.reset_index(drop=True, inplace=True)
+    splits = DatasetSplits(
+        train=train.reset_index(drop=True),
+        val=val.reset_index(drop=True),
+        test=test.reset_index(drop=True),
         feature_cols=FEATURE_COLUMNS,
     )
+    summarize_split("train", splits.train)
+    summarize_split("val", splits.val)
+    summarize_split("test", splits.test)
+    return splits
 
 
 def standardize_splits(
@@ -359,6 +548,7 @@ def standardize_splits(
     List[str],
 ]:
     train, val, test = splits.train, splits.val, splits.test
+    winsorize_features(train, val, test, WINSOR_COLUMNS, WINSOR_LOWER, WINSOR_UPPER)
     cols = splits.feature_cols
     stds = train[cols].std().fillna(0.0)
     keep_cols = stds[stds > MIN_STD].index.tolist()
@@ -421,8 +611,13 @@ def run_logistic_baseline(
     logging.info("Running logistic-regression baseline for reference")
     try:
         clf = LogisticRegression(
-            max_iter=1000,
+            max_iter=2000,
             class_weight="balanced",
+            solver="saga",
+            penalty="elasticnet",
+            l1_ratio=0.25,
+            C=0.5,
+            n_jobs=-1,
         )
         clf.fit(train_x, train_y)
     except Exception as exc:  # pragma: no cover - defensive logging only
@@ -573,9 +768,34 @@ def main() -> None:
     feature_frames = load_feature_frames(feature_files)
     label_frames = load_labels(args.label_root, [f.stem for f in feature_files])
     dataset = combine_feature_label_frames(feature_frames, label_frames)
+    ensure_feature_columns(dataset, FEATURE_COLUMNS)
     data_quality_checks(dataset, FEATURE_COLUMNS)
 
-    splits = chronological_split(dataset)
+    external_test_df: Optional[pd.DataFrame] = None
+    if args.feature_root_test is not None:
+        label_root_test = args.label_root_test or args.label_root
+        test_feature_files = discover_feature_files(
+            args.feature_root_test, args.resolution, args.test_limit_files
+        )
+        test_feature_frames = load_feature_frames(test_feature_files)
+        test_label_frames = load_labels(
+            label_root_test, [f.stem for f in test_feature_files]
+        )
+        external_test_df = combine_feature_label_frames(
+            test_feature_frames, test_label_frames
+        )
+        ensure_feature_columns(external_test_df, FEATURE_COLUMNS)
+        data_quality_checks(external_test_df, FEATURE_COLUMNS)
+
+    splits = build_splits(
+        dataset,
+        split_mode=args.split_mode,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        val_days=args.val_days,
+        test_days=args.test_days,
+        external_test=external_test_df,
+    )
     arrays = standardize_splits(splits)
     train_x, val_x, test_x, train_y, val_y, test_y, active_cols = arrays
     logging.info(
