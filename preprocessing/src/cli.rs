@@ -30,6 +30,10 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', value_name = "LIST")]
     pub resolutions: Vec<String>,
 
+    /// Override the instrument tick size (e.g. 0.25 for NQ).
+    #[arg(long, value_name = "FLOAT")]
+    pub tick_size: Option<f64>,
+
     /// Run the pipeline without writing files. Useful for smoke-testing configuration.
     #[arg(long)]
     pub dry_run: bool,
@@ -49,6 +53,7 @@ impl Cli {
             input_path: self.input.clone(),
             output_path: self.output.clone(),
             resolutions: self.parse_resolutions()?,
+            tick_size: self.tick_size,
             dry_run: Some(self.dry_run),
         };
 

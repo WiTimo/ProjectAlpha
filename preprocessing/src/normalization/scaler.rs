@@ -75,8 +75,8 @@ impl Normalizer {
     }
 
     fn normalize(&mut self, value: f64, epsilon: f64) -> ScaledValue {
-        self.observe(value);
         let divisor = self.divisor().abs() + epsilon;
+        self.observe(value);
         let rel = value / divisor;
         let log = signed_log1p(rel);
         ScaledValue {

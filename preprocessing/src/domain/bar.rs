@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
 use super::Resolution;
-use super::events::{MarketEvent, MarketEventKind};
+use super::events::{MarketEvent, MarketEventKind, QuoteEvent, TradeEvent};
 use super::order_book::OrderBookSnapshot;
 
 /// Unique identifier for a bar based on resolution + sequential index.
@@ -26,6 +26,18 @@ pub struct Bar {
     pub end: OffsetDateTime,
     pub book: OrderBookSnapshot,
     pub event_count: usize,
+    pub mid_open: Option<f64>,
+    pub mid_close: Option<f64>,
+    pub mid_high: Option<f64>,
+    pub mid_low: Option<f64>,
+    pub spread_open: Option<f64>,
+    pub spread_close: Option<f64>,
+    pub best_bid_size_close: Option<f64>,
+    pub best_ask_size_close: Option<f64>,
+    pub trade_count: usize,
+    pub trade_volume_sum: f64,
+    pub trade_volume_max: f64,
+    pub trade_volume_weighted_price: f64,
 }
 
 impl Bar {
@@ -42,17 +54,40 @@ pub struct BarAccumulator {
     pub end: OffsetDateTime,
     pub book: OrderBookSnapshot,
     pub event_count: usize,
+    mid_open: Option<f64>,
+    mid_close: Option<f64>,
+    mid_high: Option<f64>,
+    mid_low: Option<f64>,
+    spread_open: Option<f64>,
+    spread_close: Option<f64>,
+    best_bid_size_close: Option<f64>,
+    best_ask_size_close: Option<f64>,
+    trade_count: usize,
+    trade_volume_sum: f64,
+    trade_volume_max: f64,
+    trade_volume_weighted_price: f64,
 }
 
 impl BarAccumulator {
-    pub fn new(resolution: Resolution, start: OffsetDateTime, levels: usize) -> Self {
-        let span = resolution.bar_duration();
+    pub fn new(key: BarKey, start: OffsetDateTime, end: OffsetDateTime, levels: usize) -> Self {
         Self {
-            key: BarKey::new(resolution, 0),
+            key,
             start,
-            end: start + span,
+            end,
             book: OrderBookSnapshot::empty(levels),
             event_count: 0,
+            mid_open: None,
+            mid_close: None,
+            mid_high: None,
+            mid_low: None,
+            spread_open: None,
+            spread_close: None,
+            best_bid_size_close: None,
+            best_ask_size_close: None,
+            trade_count: 0,
+            trade_volume_sum: 0.0,
+            trade_volume_max: 0.0,
+            trade_volume_weighted_price: 0.0,
         }
     }
 
@@ -60,11 +95,11 @@ impl BarAccumulator {
         self.event_count += 1;
         self.book.touch(event.timestamp);
         match &event.kind {
-            MarketEventKind::Quote(_quote) => {
-                // TODO: accumulate top-of-book stats.
+            MarketEventKind::Quote(quote) => {
+                self.update_quote(quote);
             }
-            MarketEventKind::Trade(_trade) => {
-                // TODO: accumulate trade stats.
+            MarketEventKind::Trade(trade) => {
+                self.update_trade(trade);
             }
             MarketEventKind::OrderFlow(_flow) => {
                 // TODO: accumulate OFI metrics.
@@ -72,13 +107,82 @@ impl BarAccumulator {
         }
     }
 
-    pub fn finalize(self) -> Bar {
-        Bar {
+    pub fn finalize(self) -> Option<Bar> {
+        if self.event_count == 0 && self.trade_count == 0 && self.mid_open.is_none() {
+            return None;
+        }
+
+        Some(Bar {
             key: self.key,
             start: self.start,
             end: self.end,
             book: self.book,
             event_count: self.event_count,
+            mid_open: self.mid_open,
+            mid_close: self.mid_close,
+            mid_high: self.mid_high,
+            mid_low: self.mid_low,
+            spread_open: self.spread_open,
+            spread_close: self.spread_close,
+            best_bid_size_close: self.best_bid_size_close,
+            best_ask_size_close: self.best_ask_size_close,
+            trade_count: self.trade_count,
+            trade_volume_sum: self.trade_volume_sum,
+            trade_volume_max: self.trade_volume_max,
+            trade_volume_weighted_price: self.trade_volume_weighted_price,
+        })
+    }
+
+    fn update_quote(&mut self, quote: &QuoteEvent) {
+        let mid = quote.mid_price;
+        if mid.is_finite() && mid > 0.0 {
+            if self.mid_open.is_none() {
+                self.mid_open = Some(mid);
+                self.mid_high = Some(mid);
+                self.mid_low = Some(mid);
+            } else {
+                self.mid_high = Some(self.mid_high.unwrap_or(mid).max(mid));
+                self.mid_low = Some(self.mid_low.unwrap_or(mid).min(mid));
+            }
+            self.mid_close = Some(mid);
+        }
+
+        let spread = quote.best_ask_price - quote.best_bid_price;
+        if spread.is_finite() && spread >= 0.0 {
+            if self.spread_open.is_none() {
+                self.spread_open = Some(spread);
+            }
+            self.spread_close = Some(spread);
+        }
+
+        if quote.best_bid_size.is_finite() {
+            self.best_bid_size_close = Some(quote.best_bid_size);
+        }
+        if quote.best_ask_size.is_finite() {
+            self.best_ask_size_close = Some(quote.best_ask_size);
+        }
+    }
+
+    fn update_trade(&mut self, trade: &TradeEvent) {
+        self.trade_count += 1;
+        if trade.size.is_finite() && trade.size >= 0.0 {
+            self.trade_volume_sum += trade.size;
+            self.trade_volume_max = self.trade_volume_max.max(trade.size);
+            if trade.price.is_finite() {
+                self.trade_volume_weighted_price += trade.price * trade.size;
+            }
+        }
+    }
+}
+
+impl Bar {
+    pub fn mid_return(&self) -> Option<f64> {
+        let open = self.mid_open?;
+        let close = self.mid_close?;
+        if open > 0.0 && close > 0.0 {
+            Some((close / open).ln())
+        } else {
+            None
         }
     }
 }

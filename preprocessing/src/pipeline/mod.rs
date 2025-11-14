@@ -1,4 +1,6 @@
+mod bars;
 mod context;
+mod core_features;
 mod executor;
 mod labeling;
 pub mod stages;

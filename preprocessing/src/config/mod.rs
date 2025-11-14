@@ -43,7 +43,7 @@ impl PipelineConfig {
             instrument: InstrumentConfig {
                 symbol: "FAKE_INSTRUMENT".into(),
                 venue: "SIM".into(),
-                tick_size: 0.01,
+                tick_size: 0.25,
                 levels: 5,
             },
             io: IoConfig {
@@ -78,6 +78,10 @@ impl PipelineConfig {
                 .retain(|cfg| filter.contains(&cfg.resolution));
         }
 
+        if let Some(tick) = overrides.tick_size {
+            self.instrument.tick_size = tick.max(1e-12);
+        }
+
         if let Some(dry_run) = overrides.dry_run {
             self.dry_run = dry_run;
         }
@@ -96,6 +100,7 @@ pub struct PipelineOverrides {
     pub input_path: Option<PathBuf>,
     pub output_path: Option<PathBuf>,
     pub resolutions: Option<Vec<Resolution>>,
+    pub tick_size: Option<f64>,
     pub dry_run: Option<bool>,
 }
 

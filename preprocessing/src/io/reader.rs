@@ -8,7 +8,7 @@ use time::{
     macros::format_description,
 };
 
-use crate::domain::events::QuoteEvent;
+use crate::domain::events::{QuoteEvent, TradeEvent};
 use crate::domain::order_book::{BookLevel, BookSide};
 use crate::domain::{MarketEvent, MarketEventKind};
 
@@ -61,6 +61,18 @@ impl EventReader for FileEventReader {
                         kind: MarketEventKind::Quote(quote),
                     }));
                 }
+            }
+
+            if let Some(trade) = parse_l1_line(&line)? {
+                let event = MarketEvent {
+                    timestamp: trade.timestamp,
+                    kind: MarketEventKind::Trade(TradeEvent {
+                        price: trade.price,
+                        size: trade.size,
+                        aggressor: trade.aggressor,
+                    }),
+                };
+                return Ok(Some(event));
             }
         }
 
@@ -120,6 +132,14 @@ struct ParsedRow {
     size: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ParsedTrade {
+    timestamp: OffsetDateTime,
+    price: f64,
+    size: f64,
+    aggressor: Option<BookSide>,
+}
+
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year][month][day][hour][minute][second]");
 
@@ -172,6 +192,37 @@ fn parse_l2_line(line: &str) -> Result<Option<ParsedRow>> {
         operation,
         price,
         size,
+    }))
+}
+
+fn parse_l1_line(line: &str) -> Result<Option<ParsedTrade>> {
+    let mut fields = line.split(';');
+    let kind = fields.next().unwrap_or_default().trim();
+    if kind != "L1" {
+        return Ok(None);
+    }
+
+    let aggressor = match fields.next().unwrap_or_default().trim() {
+        "0" => Some(BookSide::Ask),
+        "1" => Some(BookSide::Bid),
+        _ => None,
+    };
+
+    let timestamp_raw = fields.next().unwrap_or_default().trim();
+    let offset_raw = fields.next().unwrap_or_default().trim();
+    let timestamp = parse_timestamp(timestamp_raw, offset_raw)
+        .with_context(|| format!("Invalid timestamp '{}' / '{}'", timestamp_raw, offset_raw))?;
+
+    let price_str = fields.next().unwrap_or_default();
+    let size_str = fields.next().unwrap_or_default();
+    let price = parse_number(price_str)?;
+    let size = parse_number(size_str)?;
+
+    Ok(Some(ParsedTrade {
+        timestamp,
+        price,
+        size,
+        aggressor,
     }))
 }
 
@@ -233,6 +284,24 @@ mod tests {
                 assert!((quote.mid_price - 17046.0).abs() < 1e-6);
             }
             _ => panic!("expected quote"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reader_emits_trades_from_l1_lines() -> Result<()> {
+        let mut file = NamedTempFile::new()?;
+        writeln!(file, "L1;1;20231221060001;2720000;17045,5;3")?;
+
+        let mut reader = FileEventReader::new(file.path())?;
+        let event = reader.next_event()?.expect("expected trade event");
+        match event.kind {
+            MarketEventKind::Trade(trade) => {
+                assert!((trade.price - 17045.5).abs() < 1e-6);
+                assert!((trade.size - 3.0).abs() < 1e-6);
+                assert_eq!(trade.aggressor, Some(BookSide::Bid));
+            }
+            _ => panic!("expected trade"),
         }
         Ok(())
     }

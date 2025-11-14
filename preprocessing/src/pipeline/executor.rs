@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,22 +10,36 @@ use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
 use crate::config::PipelineConfig;
-use crate::domain::{Label, LabelOutcome, LabelStats, Resolution};
+use crate::domain::{Label, LabelOutcome, LabelStats, MarketEvent, Resolution};
 use crate::io::{EventReader, FileEventReader};
 
+use super::bars::build_bars;
 use super::context::PipelineContext;
+use super::core_features::{CoreFeatureExtractor, write_core_features_parquet};
 use super::labeling::{LabelingEngine, TimeSplitAssigner};
 
 /// High-level orchestrator that will wire event sources, bar builders, and sinks.
 pub struct PreprocessingPipeline {
     pub config: PipelineConfig,
     pub ctx: PipelineContext,
+    feature_extractors: HashMap<Resolution, CoreFeatureExtractor>,
 }
 
 impl PreprocessingPipeline {
     pub fn new(config: PipelineConfig) -> Self {
         let ctx = PipelineContext::new(&config);
-        Self { config, ctx }
+        let mut feature_extractors = HashMap::new();
+        for resolution_cfg in &config.resolutions {
+            feature_extractors.insert(
+                resolution_cfg.resolution,
+                CoreFeatureExtractor::new(config.instrument.tick_size, &config.normalization),
+            );
+        }
+        Self {
+            config,
+            ctx,
+            feature_extractors,
+        }
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -55,16 +70,25 @@ impl PreprocessingPipeline {
 
         let total = input_files.len();
         for (idx, input_file) in input_files.iter().enumerate() {
-            let output_path = derive_output_path(&self.config.io.feature_output_path, input_file);
             println!(
-                "[{}/{}] {} -> {}",
+                "[{}/{}] processing {}",
                 idx + 1,
                 total,
-                input_file.display(),
-                output_path.display()
+                input_file.display()
             );
 
-            self.run_labeling_for(input_file, &output_path)?;
+            let events = read_events(input_file)?;
+            if events.is_empty() {
+                println!(
+                    "{} yielded no market events; skipping file",
+                    input_file.display()
+                );
+                continue;
+            }
+
+            let label_output = derive_output_path(&self.config.io.feature_output_path, input_file);
+            self.run_labeling_for(&events, input_file, &label_output)?;
+            self.run_core_features_for(&events, input_file)?;
         }
 
         if self.config.dry_run {
@@ -74,13 +98,12 @@ impl PreprocessingPipeline {
         Ok(())
     }
 
-    fn run_labeling_for(&self, input_file: &Path, output_path: &Path) -> Result<()> {
-        let mut reader = FileEventReader::new(input_file)?;
-        let mut events = Vec::new();
-        while let Some(event) = reader.next_event()? {
-            events.push(event);
-        }
-
+    fn run_labeling_for(
+        &self,
+        events: &[MarketEvent],
+        input_file: &Path,
+        output_path: &Path,
+    ) -> Result<()> {
         if events.is_empty() {
             println!(
                 "Labeling: {} yielded no market events (skipping label computation)",
@@ -122,6 +145,69 @@ impl PreprocessingPipeline {
                 "Labeling: {} wrote {} labels -> {}",
                 input_file.display(),
                 labels.len(),
+                output_path.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    fn run_core_features_for(&mut self, events: &[MarketEvent], input_file: &Path) -> Result<()> {
+        let resolution_plan = self.config.resolutions.clone();
+        for resolution_cfg in resolution_plan {
+            let bars = build_bars(events, resolution_cfg.resolution, resolution_cfg.levels);
+            if bars.is_empty() {
+                println!(
+                    "Features: {} [{}] produced no bars",
+                    input_file.display(),
+                    resolution_cfg.resolution
+                );
+                continue;
+            }
+
+            if bars.iter().all(|bar| bar.trade_count == 0) {
+                println!(
+                    "Features: {} [{}] observed no trade prints; trade_* features remain 0",
+                    input_file.display(),
+                    resolution_cfg.resolution
+                );
+            }
+
+            let extractor = self
+                .feature_extractors
+                .get_mut(&resolution_cfg.resolution)
+                .expect("missing feature extractor for resolution");
+            let rows = extractor.compute(&bars);
+            if rows.is_empty() {
+                println!(
+                    "Features: {} [{}] had insufficient data for Phase 1 metrics",
+                    input_file.display(),
+                    resolution_cfg.resolution
+                );
+                continue;
+            }
+
+            if self.config.dry_run {
+                println!(
+                    "Features[dry-run]: {} [{}] rows={}",
+                    input_file.display(),
+                    resolution_cfg.resolution,
+                    rows.len()
+                );
+                continue;
+            }
+
+            let output_path = derive_feature_output_path(
+                &self.config.io.feature_output_path,
+                input_file,
+                resolution_cfg.resolution,
+            );
+            write_core_features_parquet(&output_path, &rows)?;
+            println!(
+                "Features: {} [{}] wrote {} rows -> {}",
+                input_file.display(),
+                resolution_cfg.resolution,
+                rows.len(),
                 output_path.display()
             );
         }
@@ -212,6 +298,15 @@ const fn encode_outcome(outcome: LabelOutcome) -> i8 {
     }
 }
 
+fn read_events(path: &Path) -> Result<Vec<MarketEvent>> {
+    let mut reader = FileEventReader::new(path)?;
+    let mut events = Vec::new();
+    while let Some(event) = reader.next_event()? {
+        events.push(event);
+    }
+    Ok(events)
+}
+
 fn collect_input_files(path: &Path) -> Result<Vec<PathBuf>> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
@@ -254,6 +349,29 @@ fn derive_output_path(output_root: &Path, input_file: &Path) -> PathBuf {
     derived
 }
 
+fn derive_feature_output_path(
+    output_root: &Path,
+    input_file: &Path,
+    resolution: Resolution,
+) -> PathBuf {
+    if output_root.exists() && output_root.is_file() {
+        return output_root.to_path_buf();
+    }
+
+    if !output_root.exists() && output_root.extension().is_some() {
+        return output_root.to_path_buf();
+    }
+
+    let stem = input_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("features");
+    let mut derived = output_root.join(resolution.as_str());
+    derived.push(stem);
+    derived.set_extension("parquet");
+    derived
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +406,22 @@ mod tests {
     fn derive_output_path_preserves_explicit_file() {
         let output_file = PathBuf::from("/tmp/custom.arrow");
         let derived = derive_output_path(&output_file, Path::new("/tmp/foo.csv"));
+        assert_eq!(derived, output_file);
+    }
+
+    #[test]
+    fn derive_feature_output_path_places_resolution_folder() {
+        let output_root = PathBuf::from("data/preprocessed/training");
+        let derived =
+            derive_feature_output_path(&output_root, Path::new("/tmp/foo.csv"), Resolution::Fast);
+        assert_eq!(derived, output_root.join("fast").join("foo.parquet"));
+    }
+
+    #[test]
+    fn derive_feature_output_path_allows_explicit_file() {
+        let output_file = PathBuf::from("/tmp/custom.parquet");
+        let derived =
+            derive_feature_output_path(&output_file, Path::new("/tmp/foo.csv"), Resolution::Fast);
         assert_eq!(derived, output_file);
     }
 
