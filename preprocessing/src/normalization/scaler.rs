@@ -93,6 +93,7 @@ impl Normalizer {
             raw: value,
             relative: rel,
             log,
+            divisor,
         }
     }
 }
@@ -103,4 +104,5 @@ pub struct ScaledValue {
     pub raw: f64,
     pub relative: f64,
     pub log: f64,
+    pub divisor: f64,
 }

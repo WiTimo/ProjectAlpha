@@ -1,4 +1,4 @@
-"""Phase 1 (Group A) validation script.
+"""Phase 1-3 (Groups A-C) validation script.
 
 Loads feature Parquet files emitted by the Rust preprocessing pipeline, runs the
 QA steps defined in IMPLEMENTATION.md, standardizes features using train-only
@@ -26,7 +26,15 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-FEATURE_COLUMNS = [
+LEVEL_FEATURE_COUNT = 3
+LEVEL_OFFSETS_COLUMNS = [
+    f"bid_offset_level_{k}_ticks" for k in range(1, LEVEL_FEATURE_COUNT + 1)
+] + [f"ask_offset_level_{k}_ticks" for k in range(1, LEVEL_FEATURE_COUNT + 1)]
+LEVEL_SIZE_COLUMNS = [
+    f"bid_size_level_{k}_rel" for k in range(1, LEVEL_FEATURE_COUNT + 1)
+] + [f"ask_size_level_{k}_rel" for k in range(1, LEVEL_FEATURE_COUNT + 1)]
+
+CORE_FEATURE_COLUMNS = [
     "mid_return_bar",
     "spread_ticks",
     "spread_change_ticks",
@@ -40,6 +48,8 @@ FEATURE_COLUMNS = [
     "rv_log",
 ]
 
+FEATURE_COLUMNS = CORE_FEATURE_COLUMNS + LEVEL_OFFSETS_COLUMNS + LEVEL_SIZE_COLUMNS
+
 LABEL_MAP = {1: 1.0, 0: 0.0, -1: np.nan}
 MIN_STD = 1e-9
 WINSOR_COLUMNS = [
@@ -49,6 +59,7 @@ WINSOR_COLUMNS = [
     "cum_bid_size_l_rel",
     "cum_ask_size_l_rel",
     "trade_volume_sum_rel",
+    *LEVEL_SIZE_COLUMNS,
 ]
 WINSOR_LOWER = 0.001
 WINSOR_UPPER = 0.999

@@ -8,10 +8,11 @@ use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
 use crate::config::NormalizationConfig;
-use crate::domain::{Bar, BarKey};
+use crate::domain::{Bar, BarKey, BookLevel, OrderBookSnapshot};
 use crate::normalization::CausalScaler;
 
 const DEFAULT_RV_WINDOW: usize = 10;
+const LEVEL_FEATURE_COUNT: usize = 3;
 
 pub struct CoreFeatureExtractor {
     tick_size: f64,
@@ -69,9 +70,16 @@ impl CoreFeatureExtractor {
 
         let cum_bid = bar.book.cumulative_bid_size();
         let cum_ask = bar.book.cumulative_ask_size();
-        let cum_bid_rel = self.scaler.normalize_depth_bid(cum_bid).relative;
-        let cum_ask_rel = self.scaler.normalize_depth_ask(cum_ask).relative;
+        let cum_bid_scaled = self.scaler.normalize_depth_bid(cum_bid);
+        let cum_ask_scaled = self.scaler.normalize_depth_ask(cum_ask);
         let imbalance_l = compute_depth_imbalance(cum_bid, cum_ask, self.epsilon);
+        let level_bundle = compute_level_features(
+            &bar.book,
+            mid_close,
+            self.tick_size,
+            cum_bid_scaled.divisor,
+            cum_ask_scaled.divisor,
+        );
 
         Some(CoreFeatureRow {
             key: bar.key,
@@ -82,12 +90,16 @@ impl CoreFeatureExtractor {
             spread_change_ticks,
             mid_range_rel,
             imbalance_best: imbalance,
-            cum_bid_size_l_rel: cum_bid_rel,
-            cum_ask_size_l_rel: cum_ask_rel,
+            cum_bid_size_l_rel: cum_bid_scaled.relative,
+            cum_ask_size_l_rel: cum_ask_scaled.relative,
             imbalance_l,
             trade_volume_sum_rel: volume_scaled.relative,
             trade_count_log,
             rv_log,
+            bid_offset_level_ticks: level_bundle.bid_offsets,
+            ask_offset_level_ticks: level_bundle.ask_offsets,
+            bid_size_level_rel: level_bundle.bid_sizes_rel,
+            ask_size_level_rel: level_bundle.ask_sizes_rel,
         })
     }
 }
@@ -108,6 +120,96 @@ pub struct CoreFeatureRow {
     pub trade_volume_sum_rel: f64,
     pub trade_count_log: f64,
     pub rv_log: f64,
+    pub bid_offset_level_ticks: [f64; LEVEL_FEATURE_COUNT],
+    pub ask_offset_level_ticks: [f64; LEVEL_FEATURE_COUNT],
+    pub bid_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
+    pub ask_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LevelFeatureBundle {
+    bid_offsets: [f64; LEVEL_FEATURE_COUNT],
+    ask_offsets: [f64; LEVEL_FEATURE_COUNT],
+    bid_sizes_rel: [f64; LEVEL_FEATURE_COUNT],
+    ask_sizes_rel: [f64; LEVEL_FEATURE_COUNT],
+}
+
+fn compute_level_features(
+    book: &OrderBookSnapshot,
+    mid_close: f64,
+    tick_size: f64,
+    bid_depth_divisor: f64,
+    ask_depth_divisor: f64,
+) -> LevelFeatureBundle {
+    let mut bundle = LevelFeatureBundle::default();
+    fill_side_features(
+        &book.bids,
+        mid_close,
+        tick_size,
+        bid_depth_divisor,
+        true,
+        &mut bundle.bid_offsets,
+        &mut bundle.bid_sizes_rel,
+    );
+    fill_side_features(
+        &book.asks,
+        mid_close,
+        tick_size,
+        ask_depth_divisor,
+        false,
+        &mut bundle.ask_offsets,
+        &mut bundle.ask_sizes_rel,
+    );
+    bundle
+}
+
+fn fill_side_features(
+    levels: &[BookLevel],
+    mid_close: f64,
+    tick_size: f64,
+    depth_divisor: f64,
+    is_bid: bool,
+    offsets: &mut [f64; LEVEL_FEATURE_COUNT],
+    sizes_rel: &mut [f64; LEVEL_FEATURE_COUNT],
+) {
+    let divisor = if depth_divisor.is_finite() && depth_divisor > 0.0 {
+        depth_divisor
+    } else {
+        1.0
+    };
+    for (idx, level) in levels
+        .iter()
+        .take(LEVEL_FEATURE_COUNT)
+        .enumerate()
+    {
+        offsets[idx] = offset_in_ticks(mid_close, level.price, tick_size, is_bid);
+        sizes_rel[idx] = normalize_level_size(level.size, divisor);
+    }
+}
+
+fn offset_in_ticks(mid_close: f64, price: f64, tick_size: f64, is_bid: bool) -> f64 {
+    if !mid_close.is_finite() || !price.is_finite() || tick_size <= 0.0 {
+        return 0.0;
+    }
+    let diff = if is_bid {
+        mid_close - price
+    } else {
+        price - mid_close
+    };
+    let ticks = diff / tick_size;
+    if ticks.is_finite() {
+        ticks
+    } else {
+        0.0
+    }
+}
+
+fn normalize_level_size(size: f64, divisor: f64) -> f64 {
+    if !size.is_finite() || size <= 0.0 || !divisor.is_finite() || divisor <= 0.0 {
+        0.0
+    } else {
+        size / divisor
+    }
 }
 
 pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Result<()> {
@@ -120,7 +222,7 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
             .with_context(|| format!("Failed to create directories for {}", parent.display()))?;
     }
 
-    let schema = Schema::new(vec![
+    let mut fields = vec![
         Field::new("bar_index", DataType::Int64, false),
         Field::new("start_timestamp_ns", DataType::Int64, false),
         Field::new("end_timestamp_ns", DataType::Int64, false),
@@ -135,7 +237,36 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         Field::new("trade_volume_sum_rel", DataType::Float64, false),
         Field::new("trade_count_log", DataType::Float64, false),
         Field::new("rv_log", DataType::Float64, false),
-    ]);
+    ];
+    for level in 1..=LEVEL_FEATURE_COUNT {
+        fields.push(Field::new(
+            &format!("bid_offset_level_{}_ticks", level),
+            DataType::Float64,
+            false,
+        ));
+    }
+    for level in 1..=LEVEL_FEATURE_COUNT {
+        fields.push(Field::new(
+            &format!("ask_offset_level_{}_ticks", level),
+            DataType::Float64,
+            false,
+        ));
+    }
+    for level in 1..=LEVEL_FEATURE_COUNT {
+        fields.push(Field::new(
+            &format!("bid_size_level_{}_rel", level),
+            DataType::Float64,
+            false,
+        ));
+    }
+    for level in 1..=LEVEL_FEATURE_COUNT {
+        fields.push(Field::new(
+            &format!("ask_size_level_{}_rel", level),
+            DataType::Float64,
+            false,
+        ));
+    }
+    let schema = Schema::new(fields);
     let schema = std::sync::Arc::new(schema);
 
     let bar_index = Int64Array::from_iter_values(rows.iter().map(|r| r.key.index));
@@ -153,25 +284,48 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     let trade_count_log = Float64Array::from_iter_values(rows.iter().map(|r| r.trade_count_log));
     let rv_log = Float64Array::from_iter_values(rows.iter().map(|r| r.rv_log));
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            std::sync::Arc::new(bar_index) as ArrayRef,
-            std::sync::Arc::new(start_ns),
-            std::sync::Arc::new(end_ns),
-            std::sync::Arc::new(mid_return),
-            std::sync::Arc::new(spread_ticks),
-            std::sync::Arc::new(spread_change_ticks),
-            std::sync::Arc::new(mid_range_rel),
-            std::sync::Arc::new(imbalance),
-            std::sync::Arc::new(cum_bid_rel),
-            std::sync::Arc::new(cum_ask_rel),
-            std::sync::Arc::new(imbalance_l),
-            std::sync::Arc::new(volume_rel),
-            std::sync::Arc::new(trade_count_log),
-            std::sync::Arc::new(rv_log),
-        ],
-    )?;
+    let mut columns: Vec<ArrayRef> = vec![
+        std::sync::Arc::new(bar_index) as ArrayRef,
+        std::sync::Arc::new(start_ns),
+        std::sync::Arc::new(end_ns),
+        std::sync::Arc::new(mid_return),
+        std::sync::Arc::new(spread_ticks),
+        std::sync::Arc::new(spread_change_ticks),
+        std::sync::Arc::new(mid_range_rel),
+        std::sync::Arc::new(imbalance),
+        std::sync::Arc::new(cum_bid_rel),
+        std::sync::Arc::new(cum_ask_rel),
+        std::sync::Arc::new(imbalance_l),
+        std::sync::Arc::new(volume_rel),
+        std::sync::Arc::new(trade_count_log),
+        std::sync::Arc::new(rv_log),
+    ];
+    for level in 0..LEVEL_FEATURE_COUNT {
+        let arr = Float64Array::from_iter_values(
+            rows.iter().map(|r| r.bid_offset_level_ticks[level]),
+        );
+        columns.push(std::sync::Arc::new(arr));
+    }
+    for level in 0..LEVEL_FEATURE_COUNT {
+        let arr = Float64Array::from_iter_values(
+            rows.iter().map(|r| r.ask_offset_level_ticks[level]),
+        );
+        columns.push(std::sync::Arc::new(arr));
+    }
+    for level in 0..LEVEL_FEATURE_COUNT {
+        let arr = Float64Array::from_iter_values(
+            rows.iter().map(|r| r.bid_size_level_rel[level]),
+        );
+        columns.push(std::sync::Arc::new(arr));
+    }
+    for level in 0..LEVEL_FEATURE_COUNT {
+        let arr = Float64Array::from_iter_values(
+            rows.iter().map(|r| r.ask_size_level_rel[level]),
+        );
+        columns.push(std::sync::Arc::new(arr));
+    }
+
+    let batch = RecordBatch::try_new(schema.clone(), columns)?;
 
     let file = fs::File::create(path)
         .with_context(|| format!("Failed to create output file {}", path.display()))?;
@@ -264,7 +418,7 @@ mod tests {
         trade_count: usize,
         trade_volume: f64,
     ) -> Bar {
-        let mut book = OrderBookSnapshot::empty(2);
+        let mut book = OrderBookSnapshot::empty(LEVEL_FEATURE_COUNT.max(2));
         let half_spread = spread_close * 0.5;
         let bid_level = BookLevel {
             price: mid_close - half_spread,
@@ -280,7 +434,13 @@ mod tests {
         if let Some(level) = book.bids.get_mut(1) {
             *level = BookLevel {
                 price: bid_level.price - 0.01,
-                size: bid_size * 0.5,
+                size: bid_size * 0.25,
+            };
+        }
+        if let Some(level) = book.bids.get_mut(2) {
+            *level = BookLevel {
+                price: bid_level.price - 0.02,
+                size: bid_size * 0.25,
             };
         }
         if let Some(level) = book.asks.get_mut(0) {
@@ -289,7 +449,13 @@ mod tests {
         if let Some(level) = book.asks.get_mut(1) {
             *level = BookLevel {
                 price: ask_level.price + 0.01,
-                size: ask_size * 0.5,
+                size: ask_size * 0.25,
+            };
+        }
+        if let Some(level) = book.asks.get_mut(2) {
+            *level = BookLevel {
+                price: ask_level.price + 0.02,
+                size: ask_size * 0.25,
             };
         }
         book.best_bid = bid_level;
@@ -343,6 +509,12 @@ mod tests {
         let expected_depth_imbalance = (6.0 - 3.0) / (9.0 + cfg.log_epsilon);
         assert!((first.imbalance_l - expected_depth_imbalance).abs() < 1e-12);
         assert!((first.trade_volume_sum_rel - 10.0).abs() < 1e-9);
+        assert!((first.bid_offset_level_ticks[0] - 0.8).abs() < 1e-12);
+        assert!((first.ask_offset_level_ticks[0] - 0.8).abs() < 1e-12);
+        let expected_bid_level_rel = 4.0 / (1.0 + cfg.log_epsilon);
+        assert!((first.bid_size_level_rel[0] - expected_bid_level_rel).abs() < 1e-9);
+        let expected_ask_level_rel = 2.0 / (1.0 + cfg.log_epsilon);
+        assert!((first.ask_size_level_rel[0] - expected_ask_level_rel).abs() < 1e-9);
 
         let second = &rows[1];
         assert!((second.trade_volume_sum_rel - 0.5).abs() < 1e-6);
@@ -377,6 +549,8 @@ mod tests {
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let batch = reader.next().expect("batch")?;
         assert_eq!(batch.num_rows(), 1);
+        let expected_columns = 14 + (4 * LEVEL_FEATURE_COUNT);
+        assert_eq!(batch.num_columns(), expected_columns);
         Ok(())
     }
 }
