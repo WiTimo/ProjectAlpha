@@ -18,12 +18,12 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
 
-    /// Override the raw event input path without editing the config file.
-    #[arg(long, value_name = "FILE")]
+    /// Override the raw event input path (file or directory) without editing the config file.
+    #[arg(long, value_name = "PATH")]
     pub input: Option<PathBuf>,
 
-    /// Override the feature output path without editing the config file.
-    #[arg(long, value_name = "FILE")]
+    /// Override the feature output root (usually a directory) without editing the config file.
+    #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
 
     /// Comma-separated list of resolutions to process (fast,mid,slow). Default = all.
@@ -53,6 +53,7 @@ impl Cli {
         };
 
         cfg.apply_overrides(overrides);
+        cfg.validate()?;
         Ok(cfg)
     }
 

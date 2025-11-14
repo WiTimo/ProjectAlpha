@@ -1,5 +1,6 @@
 mod context;
 mod executor;
+mod labeling;
 pub mod stages;
 
 pub use context::PipelineContext;

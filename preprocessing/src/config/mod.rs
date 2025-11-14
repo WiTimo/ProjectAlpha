@@ -13,6 +13,8 @@ pub struct PipelineConfig {
     pub io: IoConfig,
     pub resolutions: Vec<ResolutionConfig>,
     pub normalization: NormalizationConfig,
+    pub labeling: LabelConfig,
+    pub data_split: DataSplitConfig,
     #[serde(default)]
     pub dry_run: bool,
 }
@@ -55,6 +57,8 @@ impl PipelineConfig {
                 ResolutionConfig::new(Resolution::Slow, 60, Some(Resolution::Mid)),
             ],
             normalization: NormalizationConfig::example(),
+            labeling: LabelConfig::example(),
+            data_split: DataSplitConfig::example(),
             dry_run: false,
         }
     }
@@ -77,6 +81,12 @@ impl PipelineConfig {
         if let Some(dry_run) = overrides.dry_run {
             self.dry_run = dry_run;
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.data_split.validate()?;
+        self.labeling.validate()?;
+        Ok(())
     }
 }
 
@@ -173,4 +183,64 @@ impl NormalizationConfig {
 pub struct RollingWindowConfig {
     pub window: usize,
     pub alpha: Option<f64>,
+}
+
+/// Parameters that control the event-based label logic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelConfig {
+    pub up_ticks: f64,
+    pub down_ticks: f64,
+    pub lookahead_events: usize,
+}
+
+impl LabelConfig {
+    fn example() -> Self {
+        Self {
+            up_ticks: 40.0,
+            down_ticks: 40.0,
+            lookahead_events: 200,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(self.up_ticks > 0.0, "up_ticks must be > 0");
+        anyhow::ensure!(self.down_ticks > 0.0, "down_ticks must be > 0");
+        anyhow::ensure!(
+            self.lookahead_events > 0,
+            "lookahead_events must be at least 1"
+        );
+        Ok(())
+    }
+}
+
+/// Ratios (summing to 1.0) that split the timeline into train/val/test segments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSplitConfig {
+    pub train_ratio: f64,
+    pub validation_ratio: f64,
+    pub test_ratio: f64,
+}
+
+impl DataSplitConfig {
+    fn example() -> Self {
+        Self {
+            train_ratio: 0.7,
+            validation_ratio: 0.15,
+            test_ratio: 0.15,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let ratios = [self.train_ratio, self.validation_ratio, self.test_ratio];
+        for ratio in ratios {
+            anyhow::ensure!(ratio >= 0.0, "split ratios cannot be negative");
+        }
+
+        let sum: f64 = ratios.iter().sum();
+        anyhow::ensure!(
+            (sum - 1.0).abs() < 1e-6,
+            "split ratios must sum to 1.0 (currently {sum})"
+        );
+        Ok(())
+    }
 }
