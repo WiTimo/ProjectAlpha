@@ -80,11 +80,33 @@ impl CoreFeatureExtractor {
             cum_bid_scaled.divisor,
             cum_ask_scaled.divisor,
         );
+        let add_bid_scaled = self
+            .scaler
+            .normalize_flow_bid(bar.limit_add_bid_volume)
+            .relative;
+        let add_ask_scaled = self
+            .scaler
+            .normalize_flow_ask(bar.limit_add_ask_volume)
+            .relative;
+        let cancel_bid_scaled = self
+            .scaler
+            .normalize_flow_bid(bar.limit_cancel_bid_volume)
+            .relative;
+        let cancel_ask_scaled = self
+            .scaler
+            .normalize_flow_ask(bar.limit_cancel_ask_volume)
+            .relative;
+        let net_bid = bar.limit_add_bid_volume - bar.limit_cancel_bid_volume;
+        let net_ask = bar.limit_add_ask_volume - bar.limit_cancel_ask_volume;
+        let limit_of_imbalance = compute_depth_imbalance(net_bid, net_ask, self.epsilon);
 
         Some(CoreFeatureRow {
             key: bar.key,
             start_ns: bar.start.unix_timestamp_nanos() as i64,
             end_ns: bar.end.unix_timestamp_nanos() as i64,
+            mid_close_price: mid_close,
+            mid_high_price: mid_high,
+            mid_low_price: mid_low,
             mid_return_bar: mid_return,
             spread_ticks: spread,
             spread_change_ticks,
@@ -100,6 +122,11 @@ impl CoreFeatureExtractor {
             ask_offset_level_ticks: level_bundle.ask_offsets,
             bid_size_level_rel: level_bundle.bid_sizes_rel,
             ask_size_level_rel: level_bundle.ask_sizes_rel,
+            limit_add_bid_volume_rel: add_bid_scaled,
+            limit_add_ask_volume_rel: add_ask_scaled,
+            limit_cancel_bid_volume_rel: cancel_bid_scaled,
+            limit_cancel_ask_volume_rel: cancel_ask_scaled,
+            limit_of_imbalance,
         })
     }
 }
@@ -109,6 +136,9 @@ pub struct CoreFeatureRow {
     pub key: BarKey,
     pub start_ns: i64,
     pub end_ns: i64,
+    pub mid_close_price: f64,
+    pub mid_high_price: f64,
+    pub mid_low_price: f64,
     pub mid_return_bar: f64,
     pub spread_ticks: f64,
     pub spread_change_ticks: f64,
@@ -124,6 +154,11 @@ pub struct CoreFeatureRow {
     pub ask_offset_level_ticks: [f64; LEVEL_FEATURE_COUNT],
     pub bid_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
     pub ask_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
+    pub limit_add_bid_volume_rel: f64,
+    pub limit_add_ask_volume_rel: f64,
+    pub limit_cancel_bid_volume_rel: f64,
+    pub limit_cancel_ask_volume_rel: f64,
+    pub limit_of_imbalance: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -177,11 +212,7 @@ fn fill_side_features(
     } else {
         1.0
     };
-    for (idx, level) in levels
-        .iter()
-        .take(LEVEL_FEATURE_COUNT)
-        .enumerate()
-    {
+    for (idx, level) in levels.iter().take(LEVEL_FEATURE_COUNT).enumerate() {
         offsets[idx] = offset_in_ticks(mid_close, level.price, tick_size, is_bid);
         sizes_rel[idx] = normalize_level_size(level.size, divisor);
     }
@@ -197,11 +228,7 @@ fn offset_in_ticks(mid_close: f64, price: f64, tick_size: f64, is_bid: bool) -> 
         price - mid_close
     };
     let ticks = diff / tick_size;
-    if ticks.is_finite() {
-        ticks
-    } else {
-        0.0
-    }
+    if ticks.is_finite() { ticks } else { 0.0 }
 }
 
 fn normalize_level_size(size: f64, divisor: f64) -> f64 {
@@ -226,6 +253,9 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         Field::new("bar_index", DataType::Int64, false),
         Field::new("start_timestamp_ns", DataType::Int64, false),
         Field::new("end_timestamp_ns", DataType::Int64, false),
+        Field::new("mid_close_price", DataType::Float64, false),
+        Field::new("mid_high_price", DataType::Float64, false),
+        Field::new("mid_low_price", DataType::Float64, false),
         Field::new("mid_return_bar", DataType::Float64, false),
         Field::new("spread_ticks", DataType::Float64, false),
         Field::new("spread_change_ticks", DataType::Float64, false),
@@ -237,6 +267,11 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         Field::new("trade_volume_sum_rel", DataType::Float64, false),
         Field::new("trade_count_log", DataType::Float64, false),
         Field::new("rv_log", DataType::Float64, false),
+        Field::new("limit_add_bid_volume_rel", DataType::Float64, false),
+        Field::new("limit_add_ask_volume_rel", DataType::Float64, false),
+        Field::new("limit_cancel_bid_volume_rel", DataType::Float64, false),
+        Field::new("limit_cancel_ask_volume_rel", DataType::Float64, false),
+        Field::new("limit_of_imbalance", DataType::Float64, false),
     ];
     for level in 1..=LEVEL_FEATURE_COUNT {
         fields.push(Field::new(
@@ -272,9 +307,13 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     let bar_index = Int64Array::from_iter_values(rows.iter().map(|r| r.key.index));
     let start_ns = Int64Array::from_iter_values(rows.iter().map(|r| r.start_ns));
     let end_ns = Int64Array::from_iter_values(rows.iter().map(|r| r.end_ns));
+    let mid_close_price = Float64Array::from_iter_values(rows.iter().map(|r| r.mid_close_price));
+    let mid_high_price = Float64Array::from_iter_values(rows.iter().map(|r| r.mid_high_price));
+    let mid_low_price = Float64Array::from_iter_values(rows.iter().map(|r| r.mid_low_price));
     let mid_return = Float64Array::from_iter_values(rows.iter().map(|r| r.mid_return_bar));
     let spread_ticks = Float64Array::from_iter_values(rows.iter().map(|r| r.spread_ticks));
-    let spread_change_ticks = Float64Array::from_iter_values(rows.iter().map(|r| r.spread_change_ticks));
+    let spread_change_ticks =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.spread_change_ticks));
     let mid_range_rel = Float64Array::from_iter_values(rows.iter().map(|r| r.mid_range_rel));
     let imbalance = Float64Array::from_iter_values(rows.iter().map(|r| r.imbalance_best));
     let cum_bid_rel = Float64Array::from_iter_values(rows.iter().map(|r| r.cum_bid_size_l_rel));
@@ -284,10 +323,24 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     let trade_count_log = Float64Array::from_iter_values(rows.iter().map(|r| r.trade_count_log));
     let rv_log = Float64Array::from_iter_values(rows.iter().map(|r| r.rv_log));
 
+    let limit_add_bid =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.limit_add_bid_volume_rel));
+    let limit_add_ask =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.limit_add_ask_volume_rel));
+    let limit_cancel_bid =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.limit_cancel_bid_volume_rel));
+    let limit_cancel_ask =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.limit_cancel_ask_volume_rel));
+    let limit_of_imbalance =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.limit_of_imbalance));
+
     let mut columns: Vec<ArrayRef> = vec![
         std::sync::Arc::new(bar_index) as ArrayRef,
         std::sync::Arc::new(start_ns),
         std::sync::Arc::new(end_ns),
+        std::sync::Arc::new(mid_close_price),
+        std::sync::Arc::new(mid_high_price),
+        std::sync::Arc::new(mid_low_price),
         std::sync::Arc::new(mid_return),
         std::sync::Arc::new(spread_ticks),
         std::sync::Arc::new(spread_change_ticks),
@@ -299,29 +352,28 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         std::sync::Arc::new(volume_rel),
         std::sync::Arc::new(trade_count_log),
         std::sync::Arc::new(rv_log),
+        std::sync::Arc::new(limit_add_bid),
+        std::sync::Arc::new(limit_add_ask),
+        std::sync::Arc::new(limit_cancel_bid),
+        std::sync::Arc::new(limit_cancel_ask),
+        std::sync::Arc::new(limit_of_imbalance),
     ];
     for level in 0..LEVEL_FEATURE_COUNT {
-        let arr = Float64Array::from_iter_values(
-            rows.iter().map(|r| r.bid_offset_level_ticks[level]),
-        );
+        let arr =
+            Float64Array::from_iter_values(rows.iter().map(|r| r.bid_offset_level_ticks[level]));
         columns.push(std::sync::Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
-        let arr = Float64Array::from_iter_values(
-            rows.iter().map(|r| r.ask_offset_level_ticks[level]),
-        );
+        let arr =
+            Float64Array::from_iter_values(rows.iter().map(|r| r.ask_offset_level_ticks[level]));
         columns.push(std::sync::Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
-        let arr = Float64Array::from_iter_values(
-            rows.iter().map(|r| r.bid_size_level_rel[level]),
-        );
+        let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.bid_size_level_rel[level]));
         columns.push(std::sync::Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
-        let arr = Float64Array::from_iter_values(
-            rows.iter().map(|r| r.ask_size_level_rel[level]),
-        );
+        let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.ask_size_level_rel[level]));
         columns.push(std::sync::Arc::new(arr));
     }
 
@@ -479,6 +531,10 @@ mod tests {
             trade_volume_sum: trade_volume,
             trade_volume_max: trade_volume,
             trade_volume_weighted_price: 0.0,
+            limit_add_bid_volume: bid_size * 0.5,
+            limit_add_ask_volume: ask_size * 0.5,
+            limit_cancel_bid_volume: bid_size * 0.25,
+            limit_cancel_ask_volume: ask_size * 0.25,
         }
     }
 
@@ -515,6 +571,14 @@ mod tests {
         assert!((first.bid_size_level_rel[0] - expected_bid_level_rel).abs() < 1e-9);
         let expected_ask_level_rel = 2.0 / (1.0 + cfg.log_epsilon);
         assert!((first.ask_size_level_rel[0] - expected_ask_level_rel).abs() < 1e-9);
+        let expected_add_bid_rel = 2.0 / (1.0 + cfg.log_epsilon);
+        assert!((first.limit_add_bid_volume_rel - expected_add_bid_rel).abs() < 1e-9);
+        let expected_cancel_ask_rel = 0.5 / (1.0 + cfg.log_epsilon);
+        assert!((first.limit_cancel_ask_volume_rel - expected_cancel_ask_rel).abs() < 1e-9);
+        let net_bid = 4.0 * 0.25;
+        let net_ask = 2.0 * 0.25;
+        let expected_imbalance = (net_bid - net_ask) / (net_bid + net_ask + cfg.log_epsilon);
+        assert!((first.limit_of_imbalance - expected_imbalance).abs() < 1e-12);
 
         let second = &rows[1];
         assert!((second.trade_volume_sum_rel - 0.5).abs() < 1e-6);
@@ -549,7 +613,7 @@ mod tests {
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let batch = reader.next().expect("batch")?;
         assert_eq!(batch.num_rows(), 1);
-        let expected_columns = 14 + (4 * LEVEL_FEATURE_COUNT);
+        let expected_columns = 19 + (4 * LEVEL_FEATURE_COUNT);
         assert_eq!(batch.num_columns(), expected_columns);
         Ok(())
     }

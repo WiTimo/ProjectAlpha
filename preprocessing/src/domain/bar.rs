@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
 use super::Resolution;
-use super::events::{MarketEvent, MarketEventKind, QuoteEvent, TradeEvent};
-use super::order_book::OrderBookSnapshot;
+use super::events::{
+    MarketEvent, MarketEventKind, OrderFlowEvent, OrderFlowOperation, QuoteEvent, TradeEvent,
+};
+use super::order_book::{BookSide, OrderBookSnapshot};
 
 /// Unique identifier for a bar based on resolution + sequential index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,6 +40,10 @@ pub struct Bar {
     pub trade_volume_sum: f64,
     pub trade_volume_max: f64,
     pub trade_volume_weighted_price: f64,
+    pub limit_add_bid_volume: f64,
+    pub limit_add_ask_volume: f64,
+    pub limit_cancel_bid_volume: f64,
+    pub limit_cancel_ask_volume: f64,
 }
 
 impl Bar {
@@ -66,6 +72,10 @@ pub struct BarAccumulator {
     trade_volume_sum: f64,
     trade_volume_max: f64,
     trade_volume_weighted_price: f64,
+    limit_add_bid_volume: f64,
+    limit_add_ask_volume: f64,
+    limit_cancel_bid_volume: f64,
+    limit_cancel_ask_volume: f64,
 }
 
 impl BarAccumulator {
@@ -88,6 +98,10 @@ impl BarAccumulator {
             trade_volume_sum: 0.0,
             trade_volume_max: 0.0,
             trade_volume_weighted_price: 0.0,
+            limit_add_bid_volume: 0.0,
+            limit_add_ask_volume: 0.0,
+            limit_cancel_bid_volume: 0.0,
+            limit_cancel_ask_volume: 0.0,
         }
     }
 
@@ -101,8 +115,8 @@ impl BarAccumulator {
             MarketEventKind::Trade(trade) => {
                 self.update_trade(trade);
             }
-            MarketEventKind::OrderFlow(_flow) => {
-                // TODO: accumulate OFI metrics.
+            MarketEventKind::OrderFlow(flow) => {
+                self.update_order_flow(flow);
             }
         }
     }
@@ -130,6 +144,10 @@ impl BarAccumulator {
             trade_volume_sum: self.trade_volume_sum,
             trade_volume_max: self.trade_volume_max,
             trade_volume_weighted_price: self.trade_volume_weighted_price,
+            limit_add_bid_volume: self.limit_add_bid_volume,
+            limit_add_ask_volume: self.limit_add_ask_volume,
+            limit_cancel_bid_volume: self.limit_cancel_bid_volume,
+            limit_cancel_ask_volume: self.limit_cancel_ask_volume,
         })
     }
 
@@ -172,6 +190,29 @@ impl BarAccumulator {
             self.trade_volume_max = self.trade_volume_max.max(trade.size);
             if trade.price.is_finite() {
                 self.trade_volume_weighted_price += trade.price * trade.size;
+            }
+        }
+    }
+
+    fn update_order_flow(&mut self, flow: &OrderFlowEvent) {
+        if !flow.size.is_finite() || flow.size <= 0.0 {
+            return;
+        }
+        let size = flow.size;
+        match (flow.operation, flow.side) {
+            (OrderFlowOperation::Add, BookSide::Bid) => {
+                self.limit_add_bid_volume += size;
+            }
+            (OrderFlowOperation::Add, BookSide::Ask) => {
+                self.limit_add_ask_volume += size;
+            }
+            (OrderFlowOperation::Cancel, BookSide::Bid)
+            | (OrderFlowOperation::Execute, BookSide::Bid) => {
+                self.limit_cancel_bid_volume += size;
+            }
+            (OrderFlowOperation::Cancel, BookSide::Ask)
+            | (OrderFlowOperation::Execute, BookSide::Ask) => {
+                self.limit_cancel_ask_volume += size;
             }
         }
     }

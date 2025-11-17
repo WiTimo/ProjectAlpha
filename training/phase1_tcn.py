@@ -1,4 +1,4 @@
-"""Phase 1-3 (Groups A-C) validation script.
+"""Phase 1-4 (Groups A-D) validation script.
 
 Loads feature Parquet files emitted by the Rust preprocessing pipeline, runs the
 QA steps defined in IMPLEMENTATION.md, standardizes features using train-only
@@ -12,9 +12,9 @@ import argparse
 import logging
 import math
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -49,8 +49,9 @@ CORE_FEATURE_COLUMNS = [
 ]
 
 FEATURE_COLUMNS = CORE_FEATURE_COLUMNS + LEVEL_OFFSETS_COLUMNS + LEVEL_SIZE_COLUMNS
+PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]
 
-LABEL_MAP = {1: 1.0, 0: 0.0, -1: np.nan}
+LABEL_MAP = {1: 1.0, 0: 0.0, -1: 0.0}
 MIN_STD = 1e-9
 WINSOR_COLUMNS = [
     "spread_ticks",
@@ -71,39 +72,21 @@ class DatasetSplits:
     val: pd.DataFrame
     test: pd.DataFrame
     feature_cols: List[str]
+    stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
-def summarize_split(name: str, df: pd.DataFrame) -> Dict[str, float]:
-    if df.empty:
-        return {
-            "rows": 0,
-            "hit_rate": float("nan"),
-            "mean_spread": float("nan"),
-            "mean_depth": float("nan"),
-            "mean_volume": float("nan"),
-        }
-    hit_rate = df["target"].mean()
-    summary = {
-        "rows": int(len(df)),
-        "hit_rate": hit_rate,
-        "mean_spread": df.get("spread_ticks", pd.Series(dtype=float)).mean(),
-        "mean_depth": (
-            df.get("cum_bid_size_l_rel", pd.Series(dtype=float))
-            .add(df.get("cum_ask_size_l_rel", pd.Series(dtype=float)), fill_value=0.0)
-            .mean()
-        ),
-        "mean_volume": df.get("trade_volume_sum_rel", pd.Series(dtype=float)).mean(),
-    }
+def summarize_split(name: str, df: pd.DataFrame) -> Dict[str, Any]:
+    stats = compute_split_stats(df)
     logging.info(
         "Split %s -> rows=%d hit_rate=%.3f mean_spread=%.2f mean_depth=%.2f mean_volume=%.2f",
         name,
-        summary["rows"],
-        summary["hit_rate"],
-        summary["mean_spread"],
-        summary["mean_depth"],
-        summary["mean_volume"],
+        stats["rows"],
+        stats["hit_rate"],
+        stats["mean_spread"],
+        stats["mean_depth"],
+        stats["mean_volume"],
     )
-    return summary
+    return stats
 
 
 class SequenceDataset(Dataset):
@@ -286,6 +269,30 @@ def parse_args() -> argparse.Namespace:
         help="Skip logistic-regression baseline evaluation",
     )
     parser.add_argument(
+        "--trade-threshold",
+        type=float,
+        default=0.55,
+        help="Minimum predicted probability required to open a trade",
+    )
+    parser.add_argument(
+        "--trade-target-ticks",
+        type=float,
+        default=40.0,
+        help="Ticks in favor required to close a trade (10 pips ~= 40 ticks for NQ)",
+    )
+    parser.add_argument(
+        "--trade-stop-ticks",
+        type=float,
+        default=None,
+        help="Optional ticks against entry to treat as stop (defaults to target if omitted)",
+    )
+    parser.add_argument(
+        "--instrument-tick-size",
+        type=float,
+        default=0.25,
+        help="Tick size of the instrument to convert ticks into price moves",
+    )
+    parser.add_argument(
         "--split-mode",
         choices=["rows", "days"],
         default="days",
@@ -370,12 +377,12 @@ def assign_labels_to_bars(features: pd.DataFrame, labels: pd.DataFrame) -> pd.Se
         & (bar_indices < len(starts))
         & (label_times < ends[bar_indices])
     )
-    aggregates: Dict[int, List[float]] = {}
-    for bar_idx, value in zip(bar_indices[valid], target_values[valid]):
-        aggregates.setdefault(int(bar_idx), []).append(float(value))
     bar_labels = np.full(len(features), np.nan)
-    for bar_idx, vals in aggregates.items():
-        bar_labels[bar_idx] = 1.0 if float(np.mean(vals)) >= 0.5 else 0.0
+    if valid.any():
+        valid_indices = bar_indices[valid].astype(int)
+        valid_values = target_values[valid]
+        for idx, bar_idx in enumerate(valid_indices):
+            bar_labels[bar_idx] = float(valid_values[idx])
     return pd.Series(bar_labels, index=features.index, name="target")
 
 
@@ -468,6 +475,250 @@ def winsorize_features(
                 frame.loc[:, col] = frame[col].clip(q_low, q_high)
 
 
+def extract_price_series(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    return {
+        "mid_close": df["mid_close_price"].astype(float).to_numpy(copy=True),
+        "mid_high": df["mid_high_price"].astype(float).to_numpy(copy=True),
+        "mid_low": df["mid_low_price"].astype(float).to_numpy(copy=True),
+    }
+
+
+def compute_split_stats(df: pd.DataFrame) -> Dict[str, Any]:
+    if df.empty:
+        return {
+            "rows": 0,
+            "hit_rate": float("nan"),
+            "mean_spread": float("nan"),
+            "mean_depth": float("nan"),
+            "mean_volume": float("nan"),
+            "hourly": pd.DataFrame(columns=["hour", "rows", "win_rate"]),
+        }
+
+    stats = {
+        "rows": int(len(df)),
+        "hit_rate": df["target"].mean(),
+        "mean_spread": df.get("spread_ticks", pd.Series(dtype=float)).mean(),
+        "mean_depth": (
+            df.get("cum_bid_size_l_rel", pd.Series(dtype=float))
+            .add(df.get("cum_ask_size_l_rel", pd.Series(dtype=float)), fill_value=0.0)
+            .mean()
+        ),
+        "mean_volume": df.get("trade_volume_sum_rel", pd.Series(dtype=float)).mean(),
+    }
+
+    if "start_timestamp_ns" in df.columns:
+        hours = pd.to_datetime(df["start_timestamp_ns"], unit="ns", utc=True).dt.hour
+        hourly_df = pd.DataFrame({"hour": hours, "target": df["target"]})
+        grouped = hourly_df.groupby("hour", dropna=False).agg(
+            rows=("target", "size"), win_rate=("target", "mean")
+        )
+        stats["hourly"] = grouped.reset_index()
+    else:
+        stats["hourly"] = pd.DataFrame(columns=["hour", "rows", "win_rate"])
+
+    return stats
+
+
+def format_hourly_table(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "(no hourly data)"
+    display = df.copy()
+    if "win_rate" in display:
+        display["win_rate"] = display["win_rate"].astype(float).round(3)
+    display["rows"] = display["rows"].astype(int)
+    display.sort_values("hour", inplace=True)
+    return display.to_string(index=False)
+
+
+def collect_probabilities(
+    model: nn.Module, loader: DataLoader, device: torch.device
+) -> Tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    probs: List[np.ndarray] = []
+    targets: List[np.ndarray] = []
+    with torch.no_grad():
+        for batch_x, batch_y in loader:
+            logits = model(batch_x.to(device))
+            batch_probs = torch.sigmoid(logits).cpu().numpy().ravel()
+            probs.append(batch_probs)
+            targets.append(batch_y.cpu().numpy().ravel())
+    if not probs:
+        return np.asarray([]), np.asarray([])
+    return np.concatenate(probs), np.concatenate(targets)
+
+
+def simulate_trade_entries(
+    probabilities: np.ndarray,
+    price_series: Dict[str, np.ndarray],
+    threshold: float,
+    target_ticks: float,
+    tick_size: float,
+    seq_len: int,
+    stop_ticks: Optional[float] = None,
+) -> Dict[str, Any]:
+    rows = int(len(probabilities))
+    target_ticks = float(target_ticks)
+    if target_ticks <= 0.0:
+        raise ValueError("trade target ticks must be positive")
+    if tick_size <= 0.0:
+        raise ValueError("tick size must be positive")
+    if stop_ticks is None:
+        stop_ticks = target_ticks
+    stop_ticks = float(abs(stop_ticks))
+
+    closes = price_series["mid_close"]
+    highs = price_series["mid_high"]
+    lows = price_series["mid_low"]
+    offset = max(seq_len - 1, 0)
+    available_rows = max(len(closes) - offset, 0)
+    usable = min(rows, available_rows)
+    if usable <= 0:
+        return {
+            "entries": 0,
+            "rows": rows,
+            "entry_rate": float("nan"),
+            "threshold": threshold,
+            "target_ticks": target_ticks,
+            "stop_ticks": stop_ticks if stop_ticks > 0 else None,
+            "tick_size": tick_size,
+            "avg_hold_bars": 0.0,
+            "targets_hit": 0,
+            "stops_hit": 0,
+            "open_trades": 0,
+        }
+    if usable != rows:
+        logging.warning(
+            "Probability/price length mismatch (prob=%d, usable=%d). Truncating to shortest.",
+            rows,
+            usable,
+        )
+    filled_entries = 0
+    targets_hit = 0
+    stops_hit = 0
+    open_trades = 0
+    hold_lengths: List[int] = []
+    next_flat_price_idx = offset  # absolute price index that is safe to enter again
+    price_len = len(closes)
+    idx = 0
+    while idx < usable:
+        price_idx = offset + idx
+        if price_idx >= price_len:
+            break
+        if price_idx < next_flat_price_idx:
+            idx += 1
+            continue
+        prob = probabilities[idx]
+        if prob < threshold:
+            idx += 1
+            continue
+        entry_price = closes[price_idx]
+        if not math.isfinite(entry_price):
+            idx += 1
+            continue
+        filled_entries += 1
+        target_price = entry_price + target_ticks * tick_size
+        stop_price = (
+            entry_price - stop_ticks * tick_size if stop_ticks > 0 else float("-inf")
+        )
+        exit_idx: Optional[int] = None
+        cursor = price_idx
+        while cursor < price_len:
+            high = highs[cursor]
+            low = lows[cursor]
+            if not math.isfinite(high):
+                high = closes[cursor]
+            if not math.isfinite(low):
+                low = closes[cursor]
+            if high >= target_price:
+                targets_hit += 1
+                exit_idx = cursor
+                break
+            if stop_ticks > 0 and low <= stop_price:
+                stops_hit += 1
+                exit_idx = cursor
+                break
+            cursor += 1
+        if exit_idx is None:
+            open_trades += 1
+            hold_lengths.append(price_len - price_idx)
+            break
+        hold_lengths.append(exit_idx - price_idx + 1)
+        next_flat_price_idx = exit_idx + 1
+        idx = max(idx + 1, next_flat_price_idx - offset)
+
+    avg_hold = float(np.mean(hold_lengths)) if hold_lengths else 0.0
+    return {
+        "entries": filled_entries,
+        "rows": usable,
+        "entry_rate": (filled_entries / usable) if usable else float("nan"),
+        "threshold": threshold,
+        "target_ticks": target_ticks,
+        "stop_ticks": stop_ticks if stop_ticks > 0 else None,
+        "tick_size": tick_size,
+        "avg_hold_bars": avg_hold,
+        "targets_hit": targets_hit,
+        "stops_hit": stops_hit,
+        "open_trades": open_trades,
+    }
+
+
+def log_final_split_results(
+    name: str,
+    stats: Optional[Dict[str, Any]],
+    acc: float,
+    auc: float,
+    execution: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not stats:
+        logging.info(
+            "Results[%s]: rows=0 win_rate=nan acc=%.3f auc=%.3f",
+            name,
+            acc,
+            auc,
+        )
+        return
+    exec_suffix = ""
+    if execution:
+        stop_ticks = execution.get("stop_ticks")
+        stop_str = (
+            f"{stop_ticks:.1f}" if isinstance(stop_ticks, (float, int)) else "none"
+        )
+        exec_suffix = (
+            f" executed_trades={execution['entries']}"
+            f" threshold={execution['threshold']:.2f}"
+            f" target_ticks={execution['target_ticks']:.1f}"
+            f" stop_ticks={stop_str}"
+        )
+    logging.info(
+        "Results[%s]: rows=%d win_rate=%.3f acc=%.3f auc=%.3f%s",
+        name,
+        stats["rows"],
+        stats["hit_rate"],
+        acc,
+        auc,
+        exec_suffix,
+    )
+    if execution:
+        logging.info(
+            "Results[%s]: executed_trades=%d over %d rows (rate=%.3f) hits=%d stops=%d open=%d avg_hold=%.2f",
+            name,
+            execution["entries"],
+            execution["rows"],
+            execution["entry_rate"],
+            execution["targets_hit"],
+            execution["stops_hit"],
+            execution["open_trades"],
+            execution["avg_hold_bars"],
+        )
+    hourly = stats.get("hourly") if isinstance(stats, dict) else None
+    if isinstance(hourly, pd.DataFrame) and not hourly.empty:
+        logging.info(
+            "Results[%s] hourly breakdown:\n%s",
+            name,
+            format_hourly_table(hourly),
+        )
+
+
 def split_by_rows(
     df: pd.DataFrame, train_ratio: float, val_ratio: float
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -541,9 +792,11 @@ def build_splits(
         test=test.reset_index(drop=True),
         feature_cols=FEATURE_COLUMNS,
     )
-    summarize_split("train", splits.train)
-    summarize_split("val", splits.val)
-    summarize_split("test", splits.test)
+    splits.stats = {
+        "train": summarize_split("train", splits.train),
+        "val": summarize_split("val", splits.val),
+        "test": summarize_split("test", splits.test),
+    }
     return splits
 
 
@@ -780,6 +1033,7 @@ def main() -> None:
     label_frames = load_labels(args.label_root, [f.stem for f in feature_files])
     dataset = combine_feature_label_frames(feature_frames, label_frames)
     ensure_feature_columns(dataset, FEATURE_COLUMNS)
+    ensure_feature_columns(dataset, PRICE_COLUMNS)
     data_quality_checks(dataset, FEATURE_COLUMNS)
 
     external_test_df: Optional[pd.DataFrame] = None
@@ -796,6 +1050,7 @@ def main() -> None:
             test_feature_frames, test_label_frames
         )
         ensure_feature_columns(external_test_df, FEATURE_COLUMNS)
+        ensure_feature_columns(external_test_df, PRICE_COLUMNS)
         data_quality_checks(external_test_df, FEATURE_COLUMNS)
 
     splits = build_splits(
@@ -808,6 +1063,11 @@ def main() -> None:
         external_test=external_test_df,
     )
     arrays = standardize_splits(splits)
+    price_series = {
+        "train": extract_price_series(splits.train),
+        "val": extract_price_series(splits.val),
+        "test": extract_price_series(splits.test),
+    }
     train_x, val_x, test_x, train_y, val_y, test_y, active_cols = arrays
     logging.info(
         "Active feature columns (%d): %s",
@@ -844,6 +1104,22 @@ def main() -> None:
     train_acc, train_auc = evaluate(model, loaders[0], device)
     val_acc, val_auc = evaluate(model, loaders[1], device)
     test_acc, test_auc = evaluate(model, loaders[2], device)
+    eval_loaders = tuple(
+        DataLoader(dl.dataset, batch_size=args.batch_size, shuffle=False)
+        for dl in loaders
+    )
+    trade_exec = {}
+    for split_name, loader_eval in zip(("train", "val", "test"), eval_loaders):
+        probs, _ = collect_probabilities(model, loader_eval, device)
+        trade_exec[split_name] = simulate_trade_entries(
+            probs,
+            price_series[split_name],
+            args.trade_threshold,
+            args.trade_target_ticks,
+            args.instrument_tick_size,
+            args.sequence_len,
+            args.trade_stop_ticks,
+        )
     logging.info(
         "Final metrics -> train: acc=%.3f auc=%.3f | val: acc=%.3f auc=%.3f | test: acc=%.3f auc=%.3f",
         train_acc,
@@ -852,6 +1128,15 @@ def main() -> None:
         val_auc,
         test_acc,
         test_auc,
+    )
+    log_final_split_results(
+        "train", splits.stats.get("train"), train_acc, train_auc, trade_exec["train"]
+    )
+    log_final_split_results(
+        "val", splits.stats.get("val"), val_acc, val_auc, trade_exec["val"]
+    )
+    log_final_split_results(
+        "test", splits.stats.get("test"), test_acc, test_auc, trade_exec["test"]
     )
 
 

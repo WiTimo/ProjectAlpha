@@ -52,10 +52,18 @@ impl OrderBookSnapshot {
     }
 
     pub fn apply_quote(&mut self, bids: &[BookLevel], asks: &[BookLevel]) {
-        for (dst, src) in self.bids.iter_mut().zip(bids.iter().chain(std::iter::repeat(&BookLevel::default()))) {
+        for (dst, src) in self
+            .bids
+            .iter_mut()
+            .zip(bids.iter().chain(std::iter::repeat(&BookLevel::default())))
+        {
             *dst = *src;
         }
-        for (dst, src) in self.asks.iter_mut().zip(asks.iter().chain(std::iter::repeat(&BookLevel::default()))) {
+        for (dst, src) in self
+            .asks
+            .iter_mut()
+            .zip(asks.iter().chain(std::iter::repeat(&BookLevel::default())))
+        {
             *dst = *src;
         }
         if let Some(first_bid) = bids.first() {
@@ -77,7 +85,13 @@ impl OrderBookSnapshot {
     fn sum_depth(levels: &[BookLevel]) -> f64 {
         levels
             .iter()
-            .map(|lvl| if lvl.size.is_finite() && lvl.size > 0.0 { lvl.size } else { 0.0 })
+            .map(|lvl| {
+                if lvl.size.is_finite() && lvl.size > 0.0 {
+                    lvl.size
+                } else {
+                    0.0
+                }
+            })
             .sum()
     }
 }

@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use ordered_float::OrderedFloat;
 use time::OffsetDateTime;
 
 use crate::config::{DataSplitConfig, LabelConfig};
@@ -42,32 +45,66 @@ impl LabelingEngine {
             return Vec::new();
         }
 
-        let lookahead = self.params.lookahead_events;
         let up_delta = self.params.up_ticks * self.tick_size;
         let down_delta = self.params.down_ticks * self.tick_size;
+
+        let mut next_up_hit: Vec<Option<usize>> = vec![None; mid_series.len()];
+        let mut next_down_hit: Vec<Option<usize>> = vec![None; mid_series.len()];
+        let mut up_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
+        let mut down_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
+
+        for (idx, (_, anchor)) in mid_series.iter().enumerate() {
+            let price = anchor.price;
+
+            while let Some((&OrderedFloat(threshold), _)) = up_waiters.first_key_value() {
+                if threshold > price {
+                    break;
+                }
+                let (_, indices) = up_waiters.pop_first().expect("checked via peek");
+                for anchor_idx in indices {
+                    if next_up_hit[anchor_idx].is_none() {
+                        next_up_hit[anchor_idx] = Some(idx);
+                    }
+                }
+            }
+
+            while let Some((&OrderedFloat(threshold), _)) = down_waiters.last_key_value() {
+                if threshold < price {
+                    break;
+                }
+                let (_, indices) = down_waiters.pop_last().expect("checked via peek");
+                for anchor_idx in indices {
+                    if next_down_hit[anchor_idx].is_none() {
+                        next_down_hit[anchor_idx] = Some(idx);
+                    }
+                }
+            }
+
+            let up_threshold = OrderedFloat(price + up_delta);
+            up_waiters.entry(up_threshold).or_default().push(idx);
+
+            let down_threshold = OrderedFloat(price - down_delta);
+            down_waiters.entry(down_threshold).or_default().push(idx);
+        }
 
         mid_series
             .iter()
             .enumerate()
             .map(|(anchor_idx, (event_index, anchor))| {
-                let up_target = anchor.price + up_delta;
-                let down_target = anchor.price - down_delta;
-                let mut outcome = LabelOutcome::NoHit;
-
-                if anchor_idx < mid_series.len() - 1 {
-                    let last_idx = (anchor_idx + lookahead).min(mid_series.len() - 1);
-                    for future in (anchor_idx + 1)..=last_idx {
-                        let (_, future_anchor) = &mid_series[future];
-                        if future_anchor.price >= up_target {
-                            outcome = LabelOutcome::HitUp;
-                            break;
-                        }
-                        if future_anchor.price <= down_target {
-                            outcome = LabelOutcome::HitDown;
-                            break;
+                let up_hit = next_up_hit[anchor_idx];
+                let down_hit = next_down_hit[anchor_idx];
+                let outcome = match (up_hit, down_hit) {
+                    (Some(up_idx), Some(down_idx)) => {
+                        if up_idx <= down_idx {
+                            LabelOutcome::HitUp
+                        } else {
+                            LabelOutcome::HitDown
                         }
                     }
-                }
+                    (Some(_), None) => LabelOutcome::HitUp,
+                    (None, Some(_)) => LabelOutcome::HitDown,
+                    (None, None) => LabelOutcome::NoHit,
+                };
 
                 Label::new(*event_index, anchor.timestamp, anchor.price, outcome)
             })
@@ -191,7 +228,6 @@ mod tests {
         let params = LabelConfig {
             up_ticks: 2.0,
             down_ticks: 2.0,
-            lookahead_events: 3,
         };
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
@@ -212,7 +248,6 @@ mod tests {
         let params = LabelConfig {
             up_ticks: 10.0,
             down_ticks: 10.0,
-            lookahead_events: 2,
         };
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
@@ -234,7 +269,6 @@ mod tests {
         let params = LabelConfig {
             up_ticks: 1.0,
             down_ticks: 1.0,
-            lookahead_events: 1,
         };
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![

@@ -1,9 +1,9 @@
-# Phase 1-3 – Python Validation
+# Phase 1-4 – Python Validation
 
 # Scope
 
 This directory hosts the lightweight validation pipeline for the Group A (core), Group B (top-of-book
-plus depth), and the new Group C (per-level structure) feature sets. It loads the Parquet outputs emitted by the Rust preprocessing crate, performs
+plus depth), Group C (per-level structure), and Group D (order-flow adds/cancels) feature sets. It loads the Parquet outputs emitted by the Rust preprocessing crate, performs
 the QA checks from `IMPLEMENTATION.md`, standardizes the features using train-only statistics (after a
 train-driven winsorization pass that calms extreme depth spikes), and trains a tiny Temporal Convolutional
 Network (TCN) as a smoke test. Metrics are logged for the validation and test segments so regressions can
@@ -51,10 +51,11 @@ The current build expects (and sanity-checks) the following normalized columns e
 - Group A: `mid_return_bar`, `spread_ticks`, `imbalance_best`, `trade_volume_sum_rel`, `trade_count_log`, `rv_log`.
 - Group B: `spread_change_ticks`, `mid_range_rel`, `cum_bid_size_l_rel`, `cum_ask_size_l_rel`, `imbalance_l`.
 - Group C (per-level, k = 1..3): `bid_offset_level_k_ticks`, `ask_offset_level_k_ticks`, `bid_size_level_k_rel`, `ask_size_level_k_rel`.
+- Group D (order-flow aggregates): `limit_add_bid_volume_rel`, `limit_add_ask_volume_rel`, `limit_cancel_bid_volume_rel`, `limit_cancel_ask_volume_rel`, `limit_of_imbalance`.
 
-Any missing column will cause the script to abort early so depth regressions surface immediately. Before
+Any missing column will cause the script to abort early so depth/flow regressions surface immediately. Before
 standardization, train quantiles (0.1% / 99.9%) are used to winsorize the most volatile columns including the
-new level size relatives so book spikes remain bounded. The same bounds are applied to validation/test to avoid
+level size relatives and flow volumes so book spikes remain bounded. The same bounds are applied to validation/test to avoid
 leakage. During training, ultra-stable columns (variance below `1e-9`) are automatically dropped; a warning is
 logged so you can confirm whether the removal is expected (e.g., if a particular resolution generates flat
 `rv_log`). The logistic-regression baseline still uses elastic-net regularization, making it stable as the feature

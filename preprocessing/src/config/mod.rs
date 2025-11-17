@@ -195,25 +195,19 @@ pub struct RollingWindowConfig {
 pub struct LabelConfig {
     pub up_ticks: f64,
     pub down_ticks: f64,
-    pub lookahead_events: usize,
 }
 
 impl LabelConfig {
     fn example() -> Self {
         Self {
-            up_ticks: 40.0,
-            down_ticks: 40.0,
-            lookahead_events: 200,
+            up_ticks: 10.0,
+            down_ticks: 10.0,
         }
     }
 
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(self.up_ticks > 0.0, "up_ticks must be > 0");
         anyhow::ensure!(self.down_ticks > 0.0, "down_ticks must be > 0");
-        anyhow::ensure!(
-            self.lookahead_events > 0,
-            "lookahead_events must be at least 1"
-        );
         Ok(())
     }
 }

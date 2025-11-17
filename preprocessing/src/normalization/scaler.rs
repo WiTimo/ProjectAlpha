@@ -8,6 +8,8 @@ use super::rolling::{Ewma, RollingStatistic, WindowedMean};
 pub struct CausalScaler {
     depth_bid: Normalizer,
     depth_ask: Normalizer,
+    flow_bid: Normalizer,
+    flow_ask: Normalizer,
     volume: Normalizer,
     count: Normalizer,
     epsilon: f64,
@@ -18,6 +20,8 @@ impl CausalScaler {
         Self {
             depth_bid: Normalizer::from_cfg(&cfg.rolling_depth),
             depth_ask: Normalizer::from_cfg(&cfg.rolling_depth),
+            flow_bid: Normalizer::from_cfg(&cfg.rolling_depth),
+            flow_ask: Normalizer::from_cfg(&cfg.rolling_depth),
             volume: Normalizer::from_cfg(&cfg.rolling_volume),
             count: Normalizer::from_cfg(&cfg.rolling_count),
             epsilon: cfg.log_epsilon,
@@ -34,6 +38,14 @@ impl CausalScaler {
 
     pub fn normalize_depth_ask(&mut self, value: f64) -> ScaledValue {
         self.depth_ask.normalize(value, self.epsilon)
+    }
+
+    pub fn normalize_flow_bid(&mut self, value: f64) -> ScaledValue {
+        self.flow_bid.normalize(value, self.epsilon)
+    }
+
+    pub fn normalize_flow_ask(&mut self, value: f64) -> ScaledValue {
+        self.flow_ask.normalize(value, self.epsilon)
     }
 
     pub fn normalize_volume(&mut self, value: f64) -> ScaledValue {
