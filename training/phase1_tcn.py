@@ -217,7 +217,7 @@ def parse_args() -> argparse.Namespace:
         "--limit-files",
         "--limit",
         type=int,
-        default=4,
+        default=0,
         help="Maximum number of Parquet files to load per split (0 = all)",
     )
     parser.add_argument(

@@ -1,0 +1,22 @@
+{
+  "name": "project-alpha",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Helper npm scripts for running preprocessing and training tasks",
+  "scripts": {
+    "preprocessing:dry": "cd preprocessing && cargo run -- --dry-run",
+    "preprocessing": "cd preprocessing && cargo run -- --input ../data/raw/training --output ../data/preprocessed/training --resolutions fast,mid,slow",
+    "preprocessing:fmt": "cd preprocessing && cargo fmt",
+    "preprocessing:build": "cd preprocessing && cargo build --release",
+    "preprocessing:clean": "cd preprocessing && cargo clean",
+    "fresh": "rm -rf data/preprocessed/* && npm run preprocessing",
+    "training:install": "python -m pip install -r training/requirements.txt",
+    "training:fast": "python training/phase1_tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution fast --epochs 32 --val-days 2 --test-days 2",
+    "training:mid": "python training/phase1_tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution mid --epochs 32",
+    "training:slow": "python training/phase1_tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution slow --epochs 32",
+    "help": "node -e \"console.log(Object.keys(require('./package.json').scripts).join('\\n'))\""
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}
