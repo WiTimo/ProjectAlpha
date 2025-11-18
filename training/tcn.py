@@ -1,9 +1,9 @@
-"""Phase 1-4 (Groups A-D) validation script.
+"""Phase 1–4 (Groups A–D) validation script.
 
 Loads feature Parquet files emitted by the Rust preprocessing pipeline, runs the
 QA steps defined in IMPLEMENTATION.md, standardizes features using train-only
 statistics, and trains a tiny Temporal Convolutional Network on the resulting
-sequences.  Metrics and sanity checks are logged to stdout.
+sequences. Metrics and sanity checks are logged to stdout.
 """
 
 from __future__ import annotations
@@ -26,10 +26,17 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+
+# -------------------------------------------------------
+# Feature configuration – updated for current dataset
+# -------------------------------------------------------
+
 LEVEL_FEATURE_COUNT = 3
+
 LEVEL_OFFSETS_COLUMNS = [
     f"bid_offset_level_{k}_ticks" for k in range(1, LEVEL_FEATURE_COUNT + 1)
 ] + [f"ask_offset_level_{k}_ticks" for k in range(1, LEVEL_FEATURE_COUNT + 1)]
+
 LEVEL_SIZE_COLUMNS = [
     f"bid_size_level_{k}_rel" for k in range(1, LEVEL_FEATURE_COUNT + 1)
 ] + [f"ask_size_level_{k}_rel" for k in range(1, LEVEL_FEATURE_COUNT + 1)]
@@ -48,11 +55,39 @@ CORE_FEATURE_COLUMNS = [
     "rv_log",
 ]
 
-FEATURE_COLUMNS = CORE_FEATURE_COLUMNS + LEVEL_OFFSETS_COLUMNS + LEVEL_SIZE_COLUMNS
+# Group D – simple order flow
+ORDERFLOW_COLUMNS = [
+    "limit_add_bid_volume_rel",
+    "limit_add_ask_volume_rel",
+    "limit_cancel_bid_volume_rel",
+    "limit_cancel_ask_volume_rel",
+    "limit_of_imbalance",
+]
+
+# Optional presence flags – level 1 is always 1.0, so we only use 2/3.
+PRESENCE_COLUMNS = [
+    "bid_level_2_present",
+    "bid_level_3_present",
+    "ask_level_2_present",
+    "ask_level_3_present",
+]
+
+FEATURE_COLUMNS = (
+    CORE_FEATURE_COLUMNS
+    + ORDERFLOW_COLUMNS
+    + LEVEL_OFFSETS_COLUMNS
+    + LEVEL_SIZE_COLUMNS
+    + PRESENCE_COLUMNS
+)
+
 PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]
 
+# Label mapping: 1 -> positive, 0/-1 -> negative
 LABEL_MAP = {1: 1.0, 0: 0.0, -1: 0.0}
+
 MIN_STD = 1e-9
+
+# Columns we winsorize using train quantiles
 WINSOR_COLUMNS = [
     "spread_ticks",
     "spread_change_ticks",
@@ -60,10 +95,21 @@ WINSOR_COLUMNS = [
     "cum_bid_size_l_rel",
     "cum_ask_size_l_rel",
     "trade_volume_sum_rel",
+    "limit_add_bid_volume_rel",
+    "limit_add_ask_volume_rel",
+    "limit_cancel_bid_volume_rel",
+    "limit_cancel_ask_volume_rel",
+    # level sizes can be heavy–tailed too:
     *LEVEL_SIZE_COLUMNS,
 ]
+
 WINSOR_LOWER = 0.001
 WINSOR_UPPER = 0.999
+
+
+# -------------------------------------------------------
+# Data containers
+# -------------------------------------------------------
 
 
 @dataclass
@@ -73,6 +119,11 @@ class DatasetSplits:
     test: pd.DataFrame
     feature_cols: List[str]
     stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+
+# -------------------------------------------------------
+# Dataset + stats helpers
+# -------------------------------------------------------
 
 
 def summarize_split(name: str, df: pd.DataFrame) -> Dict[str, Any]:
@@ -107,6 +158,11 @@ class SequenceDataset(Dataset):
         target = self.targets[idx + self.seq_len - 1]
         # rearrange to (channels, seq_len) for Conv1d
         return window.transpose(0, 1), target
+
+
+# -------------------------------------------------------
+# Tiny TCN model
+# -------------------------------------------------------
 
 
 class TemporalBlock(nn.Module):
@@ -184,7 +240,9 @@ class TinyTCN(nn.Module):
             channels_in = hidden
         self.tcn = nn.Sequential(*layers)
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(hidden, 1)
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(hidden, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -192,8 +250,13 @@ class TinyTCN(nn.Module):
         return self.classifier(features).squeeze(-1)
 
 
+# -------------------------------------------------------
+# CLI + file discovery
+# -------------------------------------------------------
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Phase 1 validation")
+    parser = argparse.ArgumentParser(description="Phase 1–4 validation (TCN)")
     parser.add_argument(
         "--feature-root",
         type=Path,
@@ -233,11 +296,17 @@ def parse_args() -> argparse.Namespace:
         help="Number of bars per training window",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=64, help="Training batch size"
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Training batch size",
     )
     parser.add_argument("--epochs", type=int, default=5, help="Training epochs")
     parser.add_argument(
-        "--learning-rate", type=float, default=1e-3, help="Adam learning rate"
+        "--learning-rate",
+        type=float,
+        default=1e-3,
+        help="Adam learning rate",
     )
     parser.add_argument(
         "--dropout",
@@ -357,6 +426,7 @@ def load_labels(label_root: Path, stems: Iterable[str]) -> Dict[str, pd.DataFram
         if not label_path.exists():
             logging.warning("Missing label file for %s", stem)
             continue
+        # event_index and anchor_price are available but not needed for alignment here
         table = pq.read_table(label_path, columns=["timestamp_ns", "outcome"])
         df = table.to_pandas()
         df["binary"] = df["outcome"].map(LABEL_MAP)
@@ -366,23 +436,44 @@ def load_labels(label_root: Path, stems: Iterable[str]) -> Dict[str, pd.DataFram
     return result
 
 
+# -------------------------------------------------------
+# Label alignment – updated aggregation (any positive wins)
+# -------------------------------------------------------
+
+
 def assign_labels_to_bars(features: pd.DataFrame, labels: pd.DataFrame) -> pd.Series:
+    """Assign a binary label to each bar.
+
+    A bar is labeled 1 if *any* event inside that bar has outcome 1,
+    otherwise 0 (if at least one non-positive event), or NaN if no
+    events fall inside the bar.
+    """
     starts = features["start_timestamp_ns"].to_numpy()
     ends = features["end_timestamp_ns"].to_numpy()
     label_times = labels["timestamp_ns"].to_numpy()
     target_values = labels["binary"].to_numpy()
+
+    # Map each label time to its bar index
     bar_indices = np.searchsorted(starts, label_times, side="right") - 1
     valid = (
         (bar_indices >= 0)
         & (bar_indices < len(starts))
         & (label_times < ends[bar_indices])
     )
-    bar_labels = np.full(len(features), np.nan)
+
+    bar_labels = np.full(len(features), np.nan, dtype=float)
+
     if valid.any():
-        valid_indices = bar_indices[valid].astype(int)
-        valid_values = target_values[valid]
-        for idx, bar_idx in enumerate(valid_indices):
-            bar_labels[bar_idx] = float(valid_values[idx])
+        # Only labels that fall strictly inside a bar
+        valid_bar_idx = bar_indices[valid].astype(int)
+        valid_vals = target_values[valid].astype(float)
+
+        # Aggregate: bar label = max(binary) over all events in this bar
+        tmp = pd.DataFrame({"bar_idx": valid_bar_idx, "val": valid_vals})
+        agg = tmp.groupby("bar_idx", sort=False)["val"].max()
+
+        bar_labels[agg.index.to_numpy()] = agg.to_numpy(dtype=float)
+
     return pd.Series(bar_labels, index=features.index, name="target")
 
 
@@ -411,6 +502,11 @@ def combine_feature_label_frames(
     df.sort_values("start_timestamp_ns", inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
+
+
+# -------------------------------------------------------
+# QA + standardisation
+# -------------------------------------------------------
 
 
 def data_quality_checks(df: pd.DataFrame, feature_cols: List[str]) -> None:
@@ -528,6 +624,234 @@ def format_hourly_table(df: pd.DataFrame) -> str:
     display["rows"] = display["rows"].astype(int)
     display.sort_values("hour", inplace=True)
     return display.to_string(index=False)
+
+
+def standardize_splits(
+    splits: DatasetSplits,
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    List[str],
+]:
+    train, val, test = splits.train, splits.val, splits.test
+
+    # Winsorization of heavy–tailed features
+    winsorize_features(train, val, test, WINSOR_COLUMNS, WINSOR_LOWER, WINSOR_UPPER)
+
+    cols = splits.feature_cols
+    stds = train[cols].std().fillna(0.0)
+    keep_cols = stds[stds > MIN_STD].index.tolist()
+    dropped = [c for c in cols if c not in keep_cols]
+    if dropped:
+        logging.warning(
+            "Dropping near-constant feature(s): %s",
+            ", ".join(dropped),
+        )
+    if not keep_cols:
+        raise ValueError("All feature columns were filtered out")
+
+    cols = keep_cols
+    splits.feature_cols = cols
+    means = train[cols].mean()
+    stds = train[cols].std().replace(0.0, 1.0)
+    logging.info("Train means:\n%s", means)
+    logging.info("Train stds:\n%s", stds)
+
+    for split in (train, val, test):
+        split.loc[:, cols] = (split[cols] - means) / stds
+
+    return (
+        train[cols].to_numpy(),
+        val[cols].to_numpy(),
+        test[cols].to_numpy(),
+        train["target"].to_numpy(),
+        val["target"].to_numpy(),
+        test["target"].to_numpy(),
+        cols,
+    )
+
+
+# -------------------------------------------------------
+# Train/val/test splitting
+# -------------------------------------------------------
+
+
+def split_by_rows(
+    df: pd.DataFrame, train_ratio: float, val_ratio: float
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    n = len(df)
+    if n == 0:
+        raise ValueError("Dataset is empty; cannot split")
+    train_end = int(n * train_ratio)
+    val_end = train_end + int(n * val_ratio)
+    val_end = min(val_end, n)
+    train = df.iloc[:train_end].copy()
+    val = df.iloc[train_end:val_end].copy()
+    test = df.iloc[val_end:].copy()
+    return train, val, test
+
+
+def split_by_days(
+    df: pd.DataFrame, val_days: int, test_days: int
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if "source_file" not in df.columns:
+        raise KeyError("source_file column missing; day-based split unavailable")
+    per_file = df.groupby("source_file")["start_timestamp_ns"].min().sort_values()
+    stems = list(per_file.index)
+    if not stems:
+        raise ValueError("No source files available for splitting")
+    total_required = val_days + test_days
+    if len(stems) <= total_required:
+        raise ValueError(
+            "Not enough distinct days (%d) for val/test requirements (%d)"
+            % (len(stems), total_required)
+        )
+
+    test_files = stems[-test_days:] if test_days > 0 else []
+    remaining = stems[: len(stems) - test_days]
+    val_files = remaining[-val_days:] if val_days > 0 else []
+    train_files = remaining[: len(remaining) - val_days]
+    if not train_files:
+        raise ValueError("Day-based split produced empty training set")
+
+    def select(files: List[str]) -> pd.DataFrame:
+        if not files:
+            return pd.DataFrame(columns=df.columns)
+        subset = df[df["source_file"].isin(files)].copy()
+        subset.sort_values("start_timestamp_ns", inplace=True)
+        subset.reset_index(drop=True, inplace=True)
+        return subset
+
+    return select(train_files), select(val_files), select(test_files)
+
+
+def build_splits(
+    df: pd.DataFrame,
+    split_mode: str,
+    train_ratio: float,
+    val_ratio: float,
+    val_days: int,
+    test_days: int,
+    external_test: Optional[pd.DataFrame] = None,
+) -> DatasetSplits:
+    if split_mode == "rows":
+        train, val, test = split_by_rows(df, train_ratio, val_ratio)
+    else:
+        local_test_days = 0 if external_test is not None else test_days
+        train, val, test = split_by_days(df, val_days, local_test_days)
+    if external_test is not None:
+        test = external_test.copy()
+        test.sort_values("start_timestamp_ns", inplace=True)
+        test.reset_index(drop=True, inplace=True)
+    splits = DatasetSplits(
+        train=train.reset_index(drop=True),
+        val=val.reset_index(drop=True),
+        test=test.reset_index(drop=True),
+        feature_cols=FEATURE_COLUMNS,
+    )
+    splits.stats = {
+        "train": summarize_split("train", splits.train),
+        "val": summarize_split("val", splits.val),
+        "test": summarize_split("test", splits.test),
+    }
+    return splits
+
+
+# -------------------------------------------------------
+# Dataloaders + baselines
+# -------------------------------------------------------
+
+
+def build_dataloaders(
+    train_x: np.ndarray,
+    val_x: np.ndarray,
+    test_x: np.ndarray,
+    train_y: np.ndarray,
+    val_y: np.ndarray,
+    test_y: np.ndarray,
+    seq_len: int,
+    batch_size: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    train_ds = SequenceDataset(train_x, train_y, seq_len)
+    val_ds = SequenceDataset(val_x, val_y, seq_len)
+    test_ds = SequenceDataset(test_x, test_y, seq_len)
+    return (
+        DataLoader(train_ds, batch_size=batch_size, shuffle=True),
+        DataLoader(val_ds, batch_size=batch_size, shuffle=False),
+        DataLoader(test_ds, batch_size=batch_size, shuffle=False),
+    )
+
+
+def run_logistic_baseline(
+    train_x: np.ndarray,
+    val_x: np.ndarray,
+    test_x: np.ndarray,
+    train_y: np.ndarray,
+    val_y: np.ndarray,
+    test_y: np.ndarray,
+) -> None:
+    logging.info("Running logistic-regression baseline for reference")
+    try:
+        clf = LogisticRegression(
+            max_iter=2000,
+            class_weight="balanced",
+            solver="saga",
+            penalty="elasticnet",
+            l1_ratio=0.25,
+            C=0.5,
+            n_jobs=-1,
+        )
+        clf.fit(train_x, train_y)
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        logging.warning("Logistic regression baseline failed: %s", exc)
+        return
+
+    for name, features, targets in (
+        ("train", train_x, train_y),
+        ("val", val_x, val_y),
+        ("test", test_x, test_y),
+    ):
+        probs = clf.predict_proba(features)[:, 1]
+        preds = (probs >= 0.5).astype(int)
+        acc = accuracy_score(preds, targets.astype(int))
+        try:
+            auc = roc_auc_score(targets, probs)
+        except ValueError:
+            auc = float("nan")
+        logging.info("LogReg %s: acc=%.3f auc=%.3f", name, acc, auc)
+
+
+# -------------------------------------------------------
+# Evaluation + trade sim
+# -------------------------------------------------------
+
+
+def evaluate(
+    model: nn.Module, loader: DataLoader, device: torch.device
+) -> Tuple[float, float]:
+    model.eval()
+    preds: List[float] = []
+    targets: List[float] = []
+    with torch.no_grad():
+        for batch_x, batch_y in loader:
+            logits = model(batch_x.to(device))
+            probs = torch.sigmoid(logits).cpu().numpy().ravel()
+            preds.extend(probs)
+            targets.extend(batch_y.cpu().numpy().ravel())
+    if not preds:
+        return float("nan"), float("nan")
+    preds_arr = np.asarray(preds)
+    targets_arr = np.asarray(targets)
+    acc = accuracy_score((preds_arr >= 0.5).astype(int), targets_arr.astype(int))
+    try:
+        auc = roc_auc_score(targets_arr, preds_arr)
+    except ValueError:
+        auc = float("nan")
+    return float(acc), float(auc)
 
 
 def collect_probabilities(
@@ -719,212 +1043,9 @@ def log_final_split_results(
         )
 
 
-def split_by_rows(
-    df: pd.DataFrame, train_ratio: float, val_ratio: float
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    n = len(df)
-    if n == 0:
-        raise ValueError("Dataset is empty; cannot split")
-    train_end = int(n * train_ratio)
-    val_end = train_end + int(n * val_ratio)
-    val_end = min(val_end, n)
-    train = df.iloc[:train_end].copy()
-    val = df.iloc[train_end:val_end].copy()
-    test = df.iloc[val_end:].copy()
-    return train, val, test
-
-
-def split_by_days(
-    df: pd.DataFrame, val_days: int, test_days: int
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    if "source_file" not in df.columns:
-        raise KeyError("source_file column missing; day-based split unavailable")
-    per_file = df.groupby("source_file")["start_timestamp_ns"].min().sort_values()
-    stems = list(per_file.index)
-    if not stems:
-        raise ValueError("No source files available for splitting")
-    total_required = val_days + test_days
-    if len(stems) <= total_required:
-        raise ValueError(
-            "Not enough distinct days (%d) for val/test requirements (%d)"
-            % (len(stems), total_required)
-        )
-
-    test_files = stems[-test_days:] if test_days > 0 else []
-    remaining = stems[: len(stems) - test_days]
-    val_files = remaining[-val_days:] if val_days > 0 else []
-    train_files = remaining[: len(remaining) - val_days]
-    if not train_files:
-        raise ValueError("Day-based split produced empty training set")
-
-    def select(files: List[str]) -> pd.DataFrame:
-        if not files:
-            return pd.DataFrame(columns=df.columns)
-        subset = df[df["source_file"].isin(files)].copy()
-        subset.sort_values("start_timestamp_ns", inplace=True)
-        subset.reset_index(drop=True, inplace=True)
-        return subset
-
-    return select(train_files), select(val_files), select(test_files)
-
-
-def build_splits(
-    df: pd.DataFrame,
-    split_mode: str,
-    train_ratio: float,
-    val_ratio: float,
-    val_days: int,
-    test_days: int,
-    external_test: Optional[pd.DataFrame] = None,
-) -> DatasetSplits:
-    if split_mode == "rows":
-        train, val, test = split_by_rows(df, train_ratio, val_ratio)
-    else:
-        local_test_days = 0 if external_test is not None else test_days
-        train, val, test = split_by_days(df, val_days, local_test_days)
-    if external_test is not None:
-        test = external_test.copy()
-        test.sort_values("start_timestamp_ns", inplace=True)
-        test.reset_index(drop=True, inplace=True)
-    splits = DatasetSplits(
-        train=train.reset_index(drop=True),
-        val=val.reset_index(drop=True),
-        test=test.reset_index(drop=True),
-        feature_cols=FEATURE_COLUMNS,
-    )
-    splits.stats = {
-        "train": summarize_split("train", splits.train),
-        "val": summarize_split("val", splits.val),
-        "test": summarize_split("test", splits.test),
-    }
-    return splits
-
-
-def standardize_splits(
-    splits: DatasetSplits,
-) -> Tuple[
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    List[str],
-]:
-    train, val, test = splits.train, splits.val, splits.test
-    winsorize_features(train, val, test, WINSOR_COLUMNS, WINSOR_LOWER, WINSOR_UPPER)
-    cols = splits.feature_cols
-    stds = train[cols].std().fillna(0.0)
-    keep_cols = stds[stds > MIN_STD].index.tolist()
-    dropped = [c for c in cols if c not in keep_cols]
-    if dropped:
-        logging.warning(
-            "Dropping near-constant feature(s): %s",
-            ", ".join(dropped),
-        )
-    if not keep_cols:
-        raise ValueError("All feature columns were filtered out")
-
-    cols = keep_cols
-    splits.feature_cols = cols
-    means = train[cols].mean()
-    stds = train[cols].std().replace(0.0, 1.0)
-    logging.info("Train means:\n%s", means)
-    logging.info("Train stds:\n%s", stds)
-    for split in (train, val, test):
-        split.loc[:, cols] = (split[cols] - means) / stds
-    return (
-        train[cols].to_numpy(),
-        val[cols].to_numpy(),
-        test[cols].to_numpy(),
-        train["target"].to_numpy(),
-        val["target"].to_numpy(),
-        test["target"].to_numpy(),
-        cols,
-    )
-
-
-def build_dataloaders(
-    train_x: np.ndarray,
-    val_x: np.ndarray,
-    test_x: np.ndarray,
-    train_y: np.ndarray,
-    val_y: np.ndarray,
-    test_y: np.ndarray,
-    seq_len: int,
-    batch_size: int,
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    train_ds = SequenceDataset(train_x, train_y, seq_len)
-    val_ds = SequenceDataset(val_x, val_y, seq_len)
-    test_ds = SequenceDataset(test_x, test_y, seq_len)
-    return (
-        DataLoader(train_ds, batch_size=batch_size, shuffle=True),
-        DataLoader(val_ds, batch_size=batch_size, shuffle=False),
-        DataLoader(test_ds, batch_size=batch_size, shuffle=False),
-    )
-
-
-def run_logistic_baseline(
-    train_x: np.ndarray,
-    val_x: np.ndarray,
-    test_x: np.ndarray,
-    train_y: np.ndarray,
-    val_y: np.ndarray,
-    test_y: np.ndarray,
-) -> None:
-    logging.info("Running logistic-regression baseline for reference")
-    try:
-        clf = LogisticRegression(
-            max_iter=2000,
-            class_weight="balanced",
-            solver="saga",
-            penalty="elasticnet",
-            l1_ratio=0.25,
-            C=0.5,
-            n_jobs=-1,
-        )
-        clf.fit(train_x, train_y)
-    except Exception as exc:  # pragma: no cover - defensive logging only
-        logging.warning("Logistic regression baseline failed: %s", exc)
-        return
-
-    for name, features, targets in (
-        ("train", train_x, train_y),
-        ("val", val_x, val_y),
-        ("test", test_x, test_y),
-    ):
-        probs = clf.predict_proba(features)[:, 1]
-        preds = (probs >= 0.5).astype(int)
-        acc = accuracy_score(preds, targets.astype(int))
-        try:
-            auc = roc_auc_score(targets, probs)
-        except ValueError:
-            auc = float("nan")
-        logging.info("LogReg %s: acc=%.3f auc=%.3f", name, acc, auc)
-
-
-def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device
-) -> Tuple[float, float]:
-    model.eval()
-    preds: List[float] = []
-    targets: List[float] = []
-    with torch.no_grad():
-        for batch_x, batch_y in loader:
-            logits = model(batch_x.to(device))
-            probs = torch.sigmoid(logits).cpu().numpy().ravel()
-            preds.extend(probs)
-            targets.extend(batch_y.cpu().numpy().ravel())
-    if not preds:
-        return float("nan"), float("nan")
-    preds_arr = np.asarray(preds)
-    targets_arr = np.asarray(targets)
-    acc = accuracy_score((preds_arr >= 0.5).astype(int), targets_arr.astype(int))
-    try:
-        auc = roc_auc_score(targets_arr, preds_arr)
-    except ValueError:
-        auc = float("nan")
-    return acc, auc
+# -------------------------------------------------------
+# Training loop
+# -------------------------------------------------------
 
 
 def train_model(
@@ -947,6 +1068,7 @@ def train_model(
     best_state: Optional[Dict[str, torch.Tensor]] = None
     patience = max(patience, 0)
     patience_left = patience
+
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
@@ -959,6 +1081,7 @@ def train_model(
             optimizer.step()
             running_loss += loss.item()
             batches += 1
+
         val_acc, val_auc = evaluate(model, val_loader, device)
         epoch_loss = running_loss / max(batches, 1)
         logging.info(
@@ -971,6 +1094,7 @@ def train_model(
         history.append(
             {"epoch": epoch, "loss": epoch_loss, "val_acc": val_acc, "val_auc": val_auc}
         )
+
         metric = val_auc if math.isfinite(val_auc) else float("-inf")
         if metric - best_auc >= min_delta:
             best_auc = metric
@@ -990,33 +1114,11 @@ def train_model(
     if best_state is not None:
         model.load_state_dict(best_state)
     return model, history
-    criterion = nn.BCEWithLogitsLoss()
-    history: List[Dict[str, float]] = []
-    for epoch in range(1, epochs + 1):
-        model.train()
-        running_loss = 0.0
-        batches = 0
-        for batch_x, batch_y in tqdm(train_loader, desc=f"epoch {epoch}", leave=False):
-            optimizer.zero_grad()
-            logits = model(batch_x.to(device))
-            loss = criterion(logits, batch_y.to(device).float())
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-            batches += 1
-        val_acc, val_auc = evaluate(model, val_loader, device)
-        epoch_loss = running_loss / max(batches, 1)
-        logging.info(
-            "Epoch %d: loss=%.4f val_acc=%.3f val_auc=%.3f",
-            epoch,
-            epoch_loss,
-            val_acc,
-            val_auc,
-        )
-        history.append(
-            {"epoch": epoch, "loss": epoch_loss, "val_acc": val_acc, "val_auc": val_auc}
-        )
-    return model, history
+
+
+# -------------------------------------------------------
+# Main
+# -------------------------------------------------------
 
 
 def main() -> None:
@@ -1024,7 +1126,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s"
     )
-    logging.info("Starting Phase 1 validation with args: %s", vars(args))
+    logging.info("Starting Phase 1–4 validation with args: %s", vars(args))
 
     feature_files = discover_feature_files(
         args.feature_root, args.resolution, args.limit_files
@@ -1074,6 +1176,7 @@ def main() -> None:
         len(active_cols),
         ", ".join(active_cols),
     )
+
     if not args.skip_baseline:
         run_logistic_baseline(train_x, val_x, test_x, train_y, val_y, test_y)
 
@@ -1104,11 +1207,13 @@ def main() -> None:
     train_acc, train_auc = evaluate(model, loaders[0], device)
     val_acc, val_auc = evaluate(model, loaders[1], device)
     test_acc, test_auc = evaluate(model, loaders[2], device)
+
     eval_loaders = tuple(
         DataLoader(dl.dataset, batch_size=args.batch_size, shuffle=False)
         for dl in loaders
     )
-    trade_exec = {}
+
+    trade_exec: Dict[str, Dict[str, Any]] = {}
     for split_name, loader_eval in zip(("train", "val", "test"), eval_loaders):
         probs, _ = collect_probabilities(model, loader_eval, device)
         trade_exec[split_name] = simulate_trade_entries(
@@ -1120,6 +1225,7 @@ def main() -> None:
             args.sequence_len,
             args.trade_stop_ticks,
         )
+
     logging.info(
         "Final metrics -> train: acc=%.3f auc=%.3f | val: acc=%.3f auc=%.3f | test: acc=%.3f auc=%.3f",
         train_acc,
