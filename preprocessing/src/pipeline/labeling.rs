@@ -20,25 +20,22 @@ impl LabelingEngine {
     /// Convert a chronologically ordered stream of market events into labels.
     pub fn compute_labels(&self, events: &[MarketEvent]) -> Vec<Label> {
         let mut mid_series: Vec<(usize, LabelAnchor)> = Vec::with_capacity(events.len());
-        let mut last_mid = None;
 
         for (idx, event) in events.iter().enumerate() {
-            match &event.kind {
-                MarketEventKind::Quote(quote) if quote.mid_price.is_finite() => {
-                    last_mid = Some(quote.mid_price);
-                }
-                _ => {}
+            let MarketEventKind::Quote(quote) = &event.kind else {
+                continue;
+            };
+            if !quote.mid_price.is_finite() {
+                continue;
             }
 
-            if let Some(mid) = last_mid {
-                mid_series.push((
-                    idx,
-                    LabelAnchor {
-                        timestamp: event.timestamp,
-                        price: mid,
-                    },
-                ));
-            }
+            mid_series.push((
+                idx,
+                LabelAnchor {
+                    timestamp: event.timestamp,
+                    price: quote.mid_price,
+                },
+            ));
         }
 
         if mid_series.is_empty() {
@@ -47,9 +44,17 @@ impl LabelingEngine {
 
         let up_delta = self.params.up_ticks * self.tick_size;
         let down_delta = self.params.down_ticks * self.tick_size;
+        let lookahead = self.params.lookahead_events.max(1);
 
-        let mut next_up_hit: Vec<Option<usize>> = vec![None; mid_series.len()];
-        let mut next_down_hit: Vec<Option<usize>> = vec![None; mid_series.len()];
+        let len = mid_series.len();
+        let mut next_up_hit: Vec<Option<usize>> = vec![None; len];
+        let mut next_down_hit: Vec<Option<usize>> = vec![None; len];
+        let mut expired: Vec<bool> = vec![false; len];
+        let mut expirations: Vec<Vec<usize>> = vec![Vec::new(); len];
+        for anchor_idx in 0..len {
+            let expiry_idx = (anchor_idx + lookahead).min(len - 1);
+            expirations[expiry_idx].push(anchor_idx);
+        }
         let mut up_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
         let mut down_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
 
@@ -62,9 +67,10 @@ impl LabelingEngine {
                 }
                 let (_, indices) = up_waiters.pop_first().expect("checked via peek");
                 for anchor_idx in indices {
-                    if next_up_hit[anchor_idx].is_none() {
-                        next_up_hit[anchor_idx] = Some(idx);
+                    if expired[anchor_idx] || next_up_hit[anchor_idx].is_some() {
+                        continue;
                     }
+                    next_up_hit[anchor_idx] = Some(idx);
                 }
             }
 
@@ -74,9 +80,10 @@ impl LabelingEngine {
                 }
                 let (_, indices) = down_waiters.pop_last().expect("checked via peek");
                 for anchor_idx in indices {
-                    if next_down_hit[anchor_idx].is_none() {
-                        next_down_hit[anchor_idx] = Some(idx);
+                    if expired[anchor_idx] || next_down_hit[anchor_idx].is_some() {
+                        continue;
                     }
+                    next_down_hit[anchor_idx] = Some(idx);
                 }
             }
 
@@ -85,6 +92,10 @@ impl LabelingEngine {
 
             let down_threshold = OrderedFloat(price - down_delta);
             down_waiters.entry(down_threshold).or_default().push(idx);
+
+            for anchor_idx in expirations[idx].drain(..) {
+                expired[anchor_idx] = true;
+            }
         }
 
         mid_series
@@ -228,6 +239,7 @@ mod tests {
         let params = LabelConfig {
             up_ticks: 2.0,
             down_ticks: 2.0,
+            lookahead_events: 10,
         };
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
@@ -248,6 +260,7 @@ mod tests {
         let params = LabelConfig {
             up_ticks: 10.0,
             down_ticks: 10.0,
+            lookahead_events: 5,
         };
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
@@ -269,6 +282,7 @@ mod tests {
         let params = LabelConfig {
             up_ticks: 1.0,
             down_ticks: 1.0,
+            lookahead_events: 5,
         };
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
@@ -286,6 +300,25 @@ mod tests {
             let ts_ns = label.timestamp.unix_timestamp_nanos();
             assert!(ts_ns >= 0, "timestamp must be non-negative");
         }
+    }
+
+    #[test]
+    fn labeler_enforces_lookahead_window() {
+        let params = LabelConfig {
+            up_ticks: 1.0,
+            down_ticks: 1.0,
+            lookahead_events: 1,
+        };
+        let engine = LabelingEngine::new(params, 0.25);
+        let events = vec![
+            quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
+            quote_event(datetime!(2025-01-01 00:00:01 UTC), 100.0),
+            quote_event(datetime!(2025-01-01 00:00:02 UTC), 99.0),
+        ];
+
+        let labels = engine.compute_labels(&events);
+        assert_eq!(labels.len(), events.len());
+        assert!(matches!(labels[0].outcome, LabelOutcome::NoHit));
     }
 
     #[test]

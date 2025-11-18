@@ -1,0 +1,96 @@
+=== BASIC DATASET INFO ===
+Rows:    805,515
+Columns: 4
+
+=== COLUMN OVERVIEW ===
+Name                           Dtype                  Nulls    Null%       Unique
+event_index                    int64                      0    0.00%      805,515
+timestamp_ns                   int64                      0    0.00%      170,829
+anchor_price                   float64                    0    0.00%        1,010
+outcome                        int8                       0    0.00%            3
+
+=== DETAILED COLUMN STATS ===
+
+--- Column: event_index ---
+Dtype: int64
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 805,515
+  Non-null count: 805,515.0
+  Mean:          717,234
+  Std dev:       414,187
+   min:          6
+   1  :          13,910.1
+   5  :          73,719.7
+   25 :          344,266
+   50 :          725,530
+   75 :          1.07919e+06
+   95 :          1.34451e+06
+   99 :          1.40473e+06
+   max:          1,420,533
+
+--- Column: timestamp_ns ---
+Dtype: int64
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 170,829
+  Non-null count: 805,515.0
+  Mean:          1,703,003,676,780,052,480
+  Std dev:       1.60797e+13
+   min:          1,702,965,600,108,000,000
+   1  :          1,702,968,120,004,000,000
+   5  :          1,702,975,170,104,000,000
+   25 :          1,702,996,496,372,000,000
+   50 :          1,703,003,550,368,000,000
+   75 :          1,703,012,262,524,000,000
+   95 :          1,703,033,377,127,599,872
+   99 :          1,703,047,259,560,000,000
+   max:          1,703,051,990,516,000,000
+
+--- Column: anchor_price ---
+Dtype: float64
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 1,010
+  Non-null count: 805,515.0
+  Mean:          17,191.8
+  Std dev:       26.8956
+   min:          17,130.2
+   1  :          17,134.8
+   5  :          17,142.8
+   25 :          17,174.2
+   50 :          17,194
+   75 :          17,209.8
+   95 :          17,241
+   99 :          17,253.4
+   max:          17,258.6
+
+--- Column: outcome ---
+Dtype: int8
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 3
+  Value distribution (including NaN):
+    -1: 349,187 (43.35%)
+    1: 228,396 (28.35%)
+    0: 227,932 (28.30%)
+  Non-null count: 805,515.0
+  Mean:          -0.149955
+  Std dev:       0.833397
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -1
+   50 :          0
+   75 :          1
+   95 :          1
+   99 :          1
+   max:          1
+
+=== SAMPLE ROWS ===
+   event_index         timestamp_ns  anchor_price  outcome
+0            6  1702965600108000000     17140.875       -1
+1            8  1702965600108000000     17140.875       -1
+2           10  1702965600108000000     17140.875       -1
+3           12  1702965600108000000     17140.875       -1
+4           14  1702965600108000000     17140.875       -1

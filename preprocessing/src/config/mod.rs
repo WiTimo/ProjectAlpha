@@ -41,7 +41,7 @@ impl PipelineConfig {
     pub fn example() -> Self {
         Self {
             instrument: InstrumentConfig {
-                symbol: "FAKE_INSTRUMENT".into(),
+                symbol: "NQ".into(),
                 venue: "SIM".into(),
                 tick_size: 0.25,
                 levels: 5,
@@ -195,6 +195,8 @@ pub struct RollingWindowConfig {
 pub struct LabelConfig {
     pub up_ticks: f64,
     pub down_ticks: f64,
+    #[serde(default = "LabelConfig::default_lookahead_events")]
+    pub lookahead_events: usize,
 }
 
 impl LabelConfig {
@@ -202,13 +204,19 @@ impl LabelConfig {
         Self {
             up_ticks: 10.0,
             down_ticks: 10.0,
+            lookahead_events: Self::default_lookahead_events(),
         }
     }
 
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(self.up_ticks > 0.0, "up_ticks must be > 0");
         anyhow::ensure!(self.down_ticks > 0.0, "down_ticks must be > 0");
+        anyhow::ensure!(self.lookahead_events > 0, "lookahead_events must be > 0");
         Ok(())
+    }
+
+    const fn default_lookahead_events() -> usize {
+        600
     }
 }
 

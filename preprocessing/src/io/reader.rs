@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Lines};
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use time::{
     macros::format_description,
 };
 
-use crate::domain::events::{QuoteEvent, TradeEvent};
+use crate::domain::events::{OrderFlowEvent, OrderFlowOperation, QuoteEvent, TradeEvent};
 use crate::domain::order_book::{BookLevel, BookSide};
 use crate::domain::{MarketEvent, MarketEventKind};
 
@@ -22,6 +23,7 @@ pub struct FileEventReader {
     path: PathBuf,
     lines: Lines<BufReader<File>>,
     quote_state: QuoteState,
+    pending: VecDeque<MarketEvent>,
 }
 
 impl FileEventReader {
@@ -34,13 +36,22 @@ impl FileEventReader {
             path,
             lines: reader.lines(),
             quote_state: QuoteState::new(levels.max(1)),
+            pending: VecDeque::new(),
         })
     }
 }
 
 impl EventReader for FileEventReader {
     fn next_event(&mut self) -> Result<Option<MarketEvent>> {
-        while let Some(line) = self.lines.next() {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Ok(Some(event));
+            }
+
+            let Some(line) = self.lines.next() else {
+                return Ok(None);
+            };
+
             let line =
                 line.with_context(|| format!("Failed to read line from {}", self.path.display()))?;
             if line.trim().is_empty() {
@@ -48,7 +59,15 @@ impl EventReader for FileEventReader {
             }
 
             if let Some(row) = parse_l2_line(&line)? {
-                if let Some(snapshot) = self.quote_state.update(row) {
+                let row_copy = row;
+                let result = self.quote_state.update(row);
+                for flow in result.flows {
+                    self.pending.push_back(MarketEvent {
+                        timestamp: row_copy.timestamp,
+                        kind: MarketEventKind::OrderFlow(flow),
+                    });
+                }
+                if let Some(snapshot) = result.snapshot {
                     let quote = QuoteEvent {
                         best_bid_price: snapshot.bid.price,
                         best_bid_size: snapshot.bid.size,
@@ -58,27 +77,25 @@ impl EventReader for FileEventReader {
                         bids: snapshot.bids,
                         asks: snapshot.asks,
                     };
-                    return Ok(Some(MarketEvent {
-                        timestamp: row.timestamp,
+                    self.pending.push_back(MarketEvent {
+                        timestamp: snapshot.timestamp,
                         kind: MarketEventKind::Quote(quote),
-                    }));
+                    });
                 }
+                continue;
             }
 
             if let Some(trade) = parse_l1_line(&line)? {
-                let event = MarketEvent {
+                self.pending.push_back(MarketEvent {
                     timestamp: trade.timestamp,
                     kind: MarketEventKind::Trade(TradeEvent {
                         price: trade.price,
                         size: trade.size,
                         aggressor: trade.aggressor,
                     }),
-                };
-                return Ok(Some(event));
+                });
             }
         }
-
-        Ok(None)
     }
 }
 
@@ -90,10 +107,16 @@ struct QuoteState {
 
 #[derive(Debug, Clone)]
 struct QuoteSnapshot {
+    timestamp: OffsetDateTime,
     bid: BookLevel,
     ask: BookLevel,
     bids: Vec<BookLevel>,
     asks: Vec<BookLevel>,
+}
+
+struct QuoteUpdateResult {
+    flows: Vec<OrderFlowEvent>,
+    snapshot: Option<QuoteSnapshot>,
 }
 
 impl QuoteState {
@@ -104,19 +127,11 @@ impl QuoteState {
         }
     }
 
-    fn update(&mut self, row: ParsedRow) -> Option<QuoteSnapshot> {
+    fn update(&mut self, row: ParsedRow) -> QuoteUpdateResult {
+        let flows = self.diff_flow(&row);
         self.apply(row);
-        let bid = self.bids.get(0).copied();
-        let ask = self.asks.get(0).copied();
-        match (bid, ask) {
-            (Some(b), Some(a)) if is_valid_level(b) && is_valid_level(a) => Some(QuoteSnapshot {
-                bid: b,
-                ask: a,
-                bids: self.bids.clone(),
-                asks: self.asks.clone(),
-            }),
-            _ => None,
-        }
+        let snapshot = self.snapshot(row.timestamp);
+        QuoteUpdateResult { flows, snapshot }
     }
 
     fn apply(&mut self, row: ParsedRow) {
@@ -139,10 +154,119 @@ impl QuoteState {
             }
         }
     }
+
+    fn snapshot(&self, timestamp: OffsetDateTime) -> Option<QuoteSnapshot> {
+        let bid = self.bids.get(0).copied();
+        let ask = self.asks.get(0).copied();
+        match (bid, ask) {
+            (Some(b), Some(a)) if is_valid_level(b) && is_valid_level(a) => Some(QuoteSnapshot {
+                timestamp,
+                bid: b,
+                ask: a,
+                bids: self.bids.clone(),
+                asks: self.asks.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    fn diff_flow(&self, row: &ParsedRow) -> Vec<OrderFlowEvent> {
+        let mut events = Vec::new();
+        let levels = match row.side {
+            BookSide::Bid => &self.bids,
+            BookSide::Ask => &self.asks,
+        };
+        if row.level >= levels.len() {
+            return events;
+        }
+
+        let prev = levels[row.level];
+        match row.operation {
+            L2Operation::Add => push_flow_event(
+                &mut events,
+                row.side,
+                OrderFlowOperation::Add,
+                row.size,
+                row.level,
+            ),
+            L2Operation::Update => {
+                if price_changed(prev.price, row.price) {
+                    push_flow_event(
+                        &mut events,
+                        row.side,
+                        OrderFlowOperation::Cancel,
+                        prev.size,
+                        row.level,
+                    );
+                    push_flow_event(
+                        &mut events,
+                        row.side,
+                        OrderFlowOperation::Add,
+                        row.size,
+                        row.level,
+                    );
+                } else {
+                    let delta = row.size - prev.size;
+                    if delta > 0.0 {
+                        push_flow_event(
+                            &mut events,
+                            row.side,
+                            OrderFlowOperation::Add,
+                            delta,
+                            row.level,
+                        );
+                    } else if delta < 0.0 {
+                        push_flow_event(
+                            &mut events,
+                            row.side,
+                            OrderFlowOperation::Cancel,
+                            -delta,
+                            row.level,
+                        );
+                    }
+                }
+            }
+            L2Operation::Remove => {
+                push_flow_event(
+                    &mut events,
+                    row.side,
+                    OrderFlowOperation::Cancel,
+                    prev.size,
+                    row.level,
+                );
+            }
+        }
+        events
+    }
 }
 
 fn is_valid_level(level: BookLevel) -> bool {
     level.price.is_finite() && level.size.is_finite() && level.price > 0.0 && level.size > 0.0
+}
+
+fn price_changed(a: f64, b: f64) -> bool {
+    if !a.is_finite() || !b.is_finite() {
+        return true;
+    }
+    (a - b).abs() > 1e-9
+}
+
+fn push_flow_event(
+    events: &mut Vec<OrderFlowEvent>,
+    side: BookSide,
+    operation: OrderFlowOperation,
+    size: f64,
+    level: usize,
+) {
+    if !size.is_finite() || size <= 0.0 {
+        return;
+    }
+    events.push(OrderFlowEvent {
+        side,
+        operation,
+        size,
+        price_level_index: Some(level),
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,8 +429,28 @@ mod tests {
         writeln!(file, "L2;1;20231221060001;2720000;0;0;;17044;1")?;
 
         let mut reader = FileEventReader::new(file.path(), 1)?;
-        let event = reader.next_event()?.expect("expected quote event");
-        match event.kind {
+        let first = reader.next_event()?.expect("expected order flow");
+        match first.kind {
+            MarketEventKind::OrderFlow(flow) => {
+                assert_eq!(flow.side, BookSide::Ask);
+                assert_eq!(flow.operation, OrderFlowOperation::Add);
+                assert!((flow.size - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("expected order flow add"),
+        }
+
+        let second = reader.next_event()?.expect("expected order flow");
+        match second.kind {
+            MarketEventKind::OrderFlow(flow) => {
+                assert_eq!(flow.side, BookSide::Bid);
+                assert_eq!(flow.operation, OrderFlowOperation::Add);
+                assert!((flow.size - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("expected order flow add"),
+        }
+
+        let quote_event = reader.next_event()?.expect("expected quote event");
+        match quote_event.kind {
             MarketEventKind::Quote(quote) => {
                 assert_eq!(quote.best_ask_price, 17048.0);
                 assert_eq!(quote.best_bid_price, 17044.0);

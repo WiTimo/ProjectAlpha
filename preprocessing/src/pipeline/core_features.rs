@@ -13,12 +13,17 @@ use crate::normalization::CausalScaler;
 
 const DEFAULT_RV_WINDOW: usize = 10;
 const LEVEL_FEATURE_COUNT: usize = 3;
+const MAX_LEVEL_OFFSET_TICKS: f64 = 256.0;
+const RV_MIN_OBSERVATIONS: usize = 2;
+const FLOW_REL_CLAMP: f64 = 25.0;
+const LIMIT_OF_IMBALANCE_CLAMP: f64 = 10.0;
 
 pub struct CoreFeatureExtractor {
     tick_size: f64,
     epsilon: f64,
     scaler: CausalScaler,
     rv: RollingVariance,
+    rv_min_window: usize,
 }
 
 impl CoreFeatureExtractor {
@@ -32,6 +37,7 @@ impl CoreFeatureExtractor {
             epsilon: norm_cfg.log_epsilon.max(1e-12),
             scaler: CausalScaler::new(norm_cfg),
             rv: RollingVariance::new(rv_window.max(1)),
+            rv_min_window: RV_MIN_OBSERVATIONS,
         }
     }
 
@@ -65,8 +71,13 @@ impl CoreFeatureExtractor {
         let trade_count_log = (bar.trade_count as f64).ln_1p();
 
         let rv_sum = self.rv.push(mid_return);
-        let rv_norm = rv_sum / (mid_close * mid_close + self.epsilon);
-        let rv_log = (1.0 + rv_norm).ln();
+        let rv_count = self.rv.count();
+        let rv_var = if rv_count >= self.rv_min_window {
+            (rv_sum / rv_count as f64).max(0.0)
+        } else {
+            0.0
+        };
+        let rv_log = (rv_var + self.epsilon).ln();
 
         let cum_bid = bar.book.cumulative_bid_size();
         let cum_ask = bar.book.cumulative_ask_size();
@@ -80,25 +91,30 @@ impl CoreFeatureExtractor {
             cum_bid_scaled.divisor,
             cum_ask_scaled.divisor,
         );
-        let add_bid_scaled = self
-            .scaler
-            .normalize_flow_bid(bar.limit_add_bid_volume)
-            .relative;
-        let add_ask_scaled = self
-            .scaler
-            .normalize_flow_ask(bar.limit_add_ask_volume)
-            .relative;
-        let cancel_bid_scaled = self
-            .scaler
-            .normalize_flow_bid(bar.limit_cancel_bid_volume)
-            .relative;
-        let cancel_ask_scaled = self
-            .scaler
-            .normalize_flow_ask(bar.limit_cancel_ask_volume)
-            .relative;
+        let add_bid_scaled = clamp_flow(
+            self.scaler
+                .normalize_flow_bid(bar.limit_add_bid_volume)
+                .relative,
+        );
+        let add_ask_scaled = clamp_flow(
+            self.scaler
+                .normalize_flow_ask(bar.limit_add_ask_volume)
+                .relative,
+        );
+        let cancel_bid_scaled = clamp_flow(
+            self.scaler
+                .normalize_flow_bid(bar.limit_cancel_bid_volume)
+                .relative,
+        );
+        let cancel_ask_scaled = clamp_flow(
+            self.scaler
+                .normalize_flow_ask(bar.limit_cancel_ask_volume)
+                .relative,
+        );
         let net_bid = bar.limit_add_bid_volume - bar.limit_cancel_bid_volume;
         let net_ask = bar.limit_add_ask_volume - bar.limit_cancel_ask_volume;
-        let limit_of_imbalance = compute_depth_imbalance(net_bid, net_ask, self.epsilon);
+        let limit_of_imbalance =
+            clamp_limit_imbalance(compute_depth_imbalance(net_bid, net_ask, self.epsilon));
 
         Some(CoreFeatureRow {
             key: bar.key,
@@ -122,6 +138,8 @@ impl CoreFeatureExtractor {
             ask_offset_level_ticks: level_bundle.ask_offsets,
             bid_size_level_rel: level_bundle.bid_sizes_rel,
             ask_size_level_rel: level_bundle.ask_sizes_rel,
+            bid_level_present: level_bundle.bid_presence,
+            ask_level_present: level_bundle.ask_presence,
             limit_add_bid_volume_rel: add_bid_scaled,
             limit_add_ask_volume_rel: add_ask_scaled,
             limit_cancel_bid_volume_rel: cancel_bid_scaled,
@@ -154,6 +172,8 @@ pub struct CoreFeatureRow {
     pub ask_offset_level_ticks: [f64; LEVEL_FEATURE_COUNT],
     pub bid_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
     pub ask_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
+    pub bid_level_present: [f64; LEVEL_FEATURE_COUNT],
+    pub ask_level_present: [f64; LEVEL_FEATURE_COUNT],
     pub limit_add_bid_volume_rel: f64,
     pub limit_add_ask_volume_rel: f64,
     pub limit_cancel_bid_volume_rel: f64,
@@ -167,6 +187,8 @@ struct LevelFeatureBundle {
     ask_offsets: [f64; LEVEL_FEATURE_COUNT],
     bid_sizes_rel: [f64; LEVEL_FEATURE_COUNT],
     ask_sizes_rel: [f64; LEVEL_FEATURE_COUNT],
+    bid_presence: [f64; LEVEL_FEATURE_COUNT],
+    ask_presence: [f64; LEVEL_FEATURE_COUNT],
 }
 
 fn compute_level_features(
@@ -185,6 +207,7 @@ fn compute_level_features(
         true,
         &mut bundle.bid_offsets,
         &mut bundle.bid_sizes_rel,
+        &mut bundle.bid_presence,
     );
     fill_side_features(
         &book.asks,
@@ -194,6 +217,7 @@ fn compute_level_features(
         false,
         &mut bundle.ask_offsets,
         &mut bundle.ask_sizes_rel,
+        &mut bundle.ask_presence,
     );
     bundle
 }
@@ -206,6 +230,7 @@ fn fill_side_features(
     is_bid: bool,
     offsets: &mut [f64; LEVEL_FEATURE_COUNT],
     sizes_rel: &mut [f64; LEVEL_FEATURE_COUNT],
+    presence: &mut [f64; LEVEL_FEATURE_COUNT],
 ) {
     let divisor = if depth_divisor.is_finite() && depth_divisor > 0.0 {
         depth_divisor
@@ -213,13 +238,20 @@ fn fill_side_features(
         1.0
     };
     for (idx, level) in levels.iter().take(LEVEL_FEATURE_COUNT).enumerate() {
-        offsets[idx] = offset_in_ticks(mid_close, level.price, tick_size, is_bid);
-        sizes_rel[idx] = normalize_level_size(level.size, divisor);
+        if level_is_present(level) {
+            offsets[idx] = offset_in_ticks(mid_close, level.price, tick_size, is_bid);
+            sizes_rel[idx] = normalize_level_size(level.size, divisor);
+            presence[idx] = 1.0;
+        } else {
+            offsets[idx] = 0.0;
+            sizes_rel[idx] = 0.0;
+            presence[idx] = 0.0;
+        }
     }
 }
 
 fn offset_in_ticks(mid_close: f64, price: f64, tick_size: f64, is_bid: bool) -> f64 {
-    if !mid_close.is_finite() || !price.is_finite() || tick_size <= 0.0 {
+    if !mid_close.is_finite() || !price.is_finite() || tick_size <= 0.0 || price <= 0.0 {
         return 0.0;
     }
     let diff = if is_bid {
@@ -228,7 +260,15 @@ fn offset_in_ticks(mid_close: f64, price: f64, tick_size: f64, is_bid: bool) -> 
         price - mid_close
     };
     let ticks = diff / tick_size;
-    if ticks.is_finite() { ticks } else { 0.0 }
+    if ticks.is_finite() {
+        ticks.clamp(-MAX_LEVEL_OFFSET_TICKS, MAX_LEVEL_OFFSET_TICKS)
+    } else {
+        0.0
+    }
+}
+
+fn level_is_present(level: &BookLevel) -> bool {
+    level.price.is_finite() && level.price > 0.0 && level.size.is_finite() && level.size > 0.0
 }
 
 fn normalize_level_size(size: f64, divisor: f64) -> f64 {
@@ -237,6 +277,16 @@ fn normalize_level_size(size: f64, divisor: f64) -> f64 {
     } else {
         size / divisor
     }
+}
+
+fn clamp_flow(value: f64) -> f64 {
+    value.max(-FLOW_REL_CLAMP).min(FLOW_REL_CLAMP)
+}
+
+fn clamp_limit_imbalance(value: f64) -> f64 {
+    value
+        .max(-LIMIT_OF_IMBALANCE_CLAMP)
+        .min(LIMIT_OF_IMBALANCE_CLAMP)
 }
 
 pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Result<()> {
@@ -297,6 +347,20 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     for level in 1..=LEVEL_FEATURE_COUNT {
         fields.push(Field::new(
             &format!("ask_size_level_{}_rel", level),
+            DataType::Float64,
+            false,
+        ));
+    }
+    for level in 1..=LEVEL_FEATURE_COUNT {
+        fields.push(Field::new(
+            &format!("bid_level_{}_present", level),
+            DataType::Float64,
+            false,
+        ));
+    }
+    for level in 1..=LEVEL_FEATURE_COUNT {
+        fields.push(Field::new(
+            &format!("ask_level_{}_present", level),
             DataType::Float64,
             false,
         ));
@@ -376,6 +440,14 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.ask_size_level_rel[level]));
         columns.push(std::sync::Arc::new(arr));
     }
+    for level in 0..LEVEL_FEATURE_COUNT {
+        let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.bid_level_present[level]));
+        columns.push(std::sync::Arc::new(arr));
+    }
+    for level in 0..LEVEL_FEATURE_COUNT {
+        let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.ask_level_present[level]));
+        columns.push(std::sync::Arc::new(arr));
+    }
 
     let batch = RecordBatch::try_new(schema.clone(), columns)?;
 
@@ -431,6 +503,10 @@ impl RollingVariance {
             }
         }
         self.sum
+    }
+
+    fn count(&self) -> usize {
+        self.buffer.len()
     }
 }
 
@@ -571,6 +647,8 @@ mod tests {
         assert!((first.bid_size_level_rel[0] - expected_bid_level_rel).abs() < 1e-9);
         let expected_ask_level_rel = 2.0 / (1.0 + cfg.log_epsilon);
         assert!((first.ask_size_level_rel[0] - expected_ask_level_rel).abs() < 1e-9);
+        assert_eq!(first.bid_level_present[0], 1.0);
+        assert_eq!(first.ask_level_present[0], 1.0);
         let expected_add_bid_rel = 2.0 / (1.0 + cfg.log_epsilon);
         assert!((first.limit_add_bid_volume_rel - expected_add_bid_rel).abs() < 1e-9);
         let expected_cancel_ask_rel = 0.5 / (1.0 + cfg.log_epsilon);
@@ -613,7 +691,7 @@ mod tests {
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let batch = reader.next().expect("batch")?;
         assert_eq!(batch.num_rows(), 1);
-        let expected_columns = 19 + (4 * LEVEL_FEATURE_COUNT);
+        let expected_columns = 22 + (6 * LEVEL_FEATURE_COUNT);
         assert_eq!(batch.num_columns(), expected_columns);
         Ok(())
     }

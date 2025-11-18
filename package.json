@@ -9,6 +9,8 @@
     "preprocessing:fmt": "cd preprocessing && cargo fmt",
     "preprocessing:build": "cd preprocessing && cargo build --release",
     "preprocessing:clean": "cd preprocessing && cargo clean",
+    "preprocessing:investigate": "python preprocessing/test/describe_parquet.py --input data/preprocessed/training/fast/20231219.parquet --output preprocessing/test/parquet-output.txt",
+    "preprocessing:investigate:labels": "python preprocessing/test/describe_parquet.py --input data/preprocessed/training/20231219.parquet --output preprocessing/test/parquet-labels-output.txt",
     "fresh": "rm -rf data/preprocessed/* && npm run preprocessing",
     "training:install": "python -m pip install -r training/requirements.txt",
     "training:fast": "python training/phase1_tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution fast --epochs 32 --val-days 2 --test-days 2",
