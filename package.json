@@ -5,17 +5,17 @@
   "description": "Helper npm scripts for running preprocessing and training tasks",
   "scripts": {
     "preprocessing:dry": "cd preprocessing && cargo run -- --dry-run",
-    "preprocessing": "cd preprocessing && cargo run -- --input ../data/raw/training --output ../data/preprocessed/training --resolutions fast,mid,slow",
+    "preprocessing": "cd preprocessing && cargo run -- --input ../data/raw --output ../data/preprocessed --resolutions fast,mid,slow",
     "preprocessing:fmt": "cd preprocessing && cargo fmt",
     "preprocessing:build": "cd preprocessing && cargo build --release",
     "preprocessing:clean": "cd preprocessing && cargo clean",
-    "preprocessing:investigate": "python preprocessing/test/describe_parquet.py --input data/preprocessed/training/fast/20231219.parquet --output preprocessing/test/parquet-output.txt",
-    "preprocessing:investigate:labels": "python preprocessing/test/describe_parquet.py --input data/preprocessed/training/20231219.parquet --output preprocessing/test/parquet-labels-output.txt",
+    "preprocessing:investigate": "python preprocessing/test/describe_parquet.py --input data/preprocessed/fast/20231219.parquet --output preprocessing/test/parquet-output.txt",
+    "preprocessing:investigate:labels": "python preprocessing/test/describe_parquet.py --input data/preprocessed/20231219.parquet --output preprocessing/test/parquet-labels-output.txt",
     "fresh": "rm -rf data/preprocessed/* && npm run preprocessing",
     "training:install": "python -m pip install -r training/requirements.txt",
-    "training:fast": "python training/tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution fast --epochs 32 --val-days 5 --test-days 5",
-    "training:mid": "python training/tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution mid --epochs 32",
-    "training:slow": "python training/tcn.py --feature-root data/preprocessed/training --label-root data/preprocessed/training --resolution slow --epochs 32",
+    "training:fast": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolution fast --epochs 32 --val-days 5 --test-days 5",
+    "training:mid": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolution mid --epochs 32",
+    "training:slow": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolution slow --epochs 32",
     "help": "node -e \"console.log(Object.keys(require('./package.json').scripts).join('\\n'))\""
   },
   "engines": {

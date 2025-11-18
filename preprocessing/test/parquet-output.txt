@@ -1,6 +1,6 @@
 === BASIC DATASET INFO ===
 Rows:    35,890
-Columns: 40
+Columns: 48
 
 === COLUMN OVERVIEW ===
 Name                           Dtype                  Nulls    Null%       Unique
@@ -20,12 +20,20 @@ cum_ask_size_l_rel             float64                    0    0.00%       35,89
 imbalance_l                    float64                    0    0.00%          332
 trade_volume_sum_rel           float64                    0    0.00%       28,162
 trade_count_log                float64                    0    0.00%           59
+buy_trade_volume_rel           float64                    0    0.00%       24,390
+sell_trade_volume_rel          float64                    0    0.00%       23,918
+trade_imbalance_ratio          float64                    0    0.00%          602
+avg_buy_dist_to_ask            float64                    0    0.00%          955
+avg_sell_dist_to_bid           float64                    0    0.00%          997
 rv_log                         float64                    0    0.00%       26,043
 limit_add_bid_volume_rel       float64                    0    0.00%       29,062
 limit_add_ask_volume_rel       float64                    0    0.00%       29,611
 limit_cancel_bid_volume_rel    float64                    0    0.00%       25,856
 limit_cancel_ask_volume_rel    float64                    0    0.00%       26,396
 limit_of_imbalance             float64                    0    0.00%          619
+ofi_bid                        float64                    0    0.00%       16,289
+ofi_ask                        float64                    0    0.00%       17,367
+ofi_net_log                    float64                    0    0.00%       21,103
 bid_offset_level_1_ticks       float64                    0    0.00%           35
 bid_offset_level_2_ticks       float64                    0    0.00%           60
 bid_offset_level_3_ticks       float64                    0    0.00%           85
@@ -335,6 +343,96 @@ Unique non-null values: 59
    99 :          3.43399
    max:          4.11087
 
+--- Column: buy_trade_volume_rel ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 24,390
+  Non-null count: 35,890.0
+  Mean:          0.382532
+  Std dev:       0.540589
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          0.21969
+   75 :          0.569653
+   95 :          1.32853
+   99 :          2.26881
+   max:          22.4265
+
+--- Column: sell_trade_volume_rel ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 23,918
+  Non-null count: 35,890.0
+  Mean:          0.375591
+  Std dev:       0.51666
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          0.21547
+   75 :          0.564146
+   95 :          1.32855
+   99 :          2.20189
+   max:          14.8053
+
+--- Column: trade_imbalance_ratio ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 602
+  Non-null count: 35,890.0
+  Mean:          0.0101908
+  Std dev:       0.530516
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -0.272727
+   50 :          0
+   75 :          0.333333
+   95 :          1
+   99 :          1
+   max:          1
+
+--- Column: avg_buy_dist_to_ask ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 955
+  Non-null count: 35,890.0
+  Mean:          6.36143
+  Std dev:       5.97505
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          6.88889
+   75 :          11.1818
+   95 :          16
+   99 :          18
+   max:          38
+
+--- Column: avg_sell_dist_to_bid ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 997
+  Non-null count: 35,890.0
+  Mean:          6.62456
+  Std dev:       5.96803
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          8
+   75 :          11.5
+   95 :          16
+   99 :          17.6667
+   max:          54
+
 --- Column: rv_log ---
 Dtype: float64
 Total rows: 35,890
@@ -442,6 +540,60 @@ Unique non-null values: 619
    95 :          1
    99 :          3
    max:          10
+
+--- Column: ofi_bid ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 16,289
+  Non-null count: 35,890.0
+  Mean:          0.07649
+  Std dev:       0.186002
+   min:          -1.03818
+   1  :          -0.379803
+   5  :          -0.190453
+   25 :          0
+   50 :          0
+   75 :          0.162984
+   95 :          0.41152
+   99 :          0.69315
+   max:          1.72506
+
+--- Column: ofi_ask ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 17,367
+  Non-null count: 35,890.0
+  Mean:          -0.0661106
+  Std dev:       0.202635
+   min:          -1.38629
+   1  :          -0.68393
+   5  :          -0.417639
+   25 :          -0.172439
+   50 :          0
+   75 :          0
+   95 :          0.208394
+   99 :          0.407039
+   max:          0.956022
+
+--- Column: ofi_net_log ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 21,103
+  Non-null count: 35,890.0
+  Mean:          0.0103624
+  Std dev:       0.29318
+   min:          -1.51371
+   1  :          -0.806037
+   5  :          -0.491807
+   25 :          -0.141474
+   50 :          0
+   75 :          0.152766
+   95 :          0.518165
+   99 :          0.870941
+   max:          1.59903
 
 --- Column: bid_offset_level_1_ticks ---
 Dtype: float64

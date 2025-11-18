@@ -1,4 +1,4 @@
-"""Phase 1–4 (Groups A–D) validation script.
+"""Phase 1–5 (Groups A–E) validation script.
 
 Loads feature Parquet files emitted by the Rust preprocessing pipeline, runs the
 QA steps defined in IMPLEMENTATION.md, standardizes features using train-only
@@ -55,13 +55,24 @@ CORE_FEATURE_COLUMNS = [
     "rv_log",
 ]
 
-# Group D – simple order flow
+# Group D/E – order flow + aggressor stats
 ORDERFLOW_COLUMNS = [
     "limit_add_bid_volume_rel",
     "limit_add_ask_volume_rel",
     "limit_cancel_bid_volume_rel",
     "limit_cancel_ask_volume_rel",
     "limit_of_imbalance",
+    "ofi_bid",
+    "ofi_ask",
+    "ofi_net_log",
+]
+
+AGGRESSOR_COLUMNS = [
+    "buy_trade_volume_rel",
+    "sell_trade_volume_rel",
+    "trade_imbalance_ratio",
+    "avg_buy_dist_to_ask",
+    "avg_sell_dist_to_bid",
 ]
 
 # Optional presence flags – level 1 is always 1.0, so we only use 2/3.
@@ -75,6 +86,7 @@ PRESENCE_COLUMNS = [
 FEATURE_COLUMNS = (
     CORE_FEATURE_COLUMNS
     + ORDERFLOW_COLUMNS
+    + AGGRESSOR_COLUMNS
     + LEVEL_OFFSETS_COLUMNS
     + LEVEL_SIZE_COLUMNS
     + PRESENCE_COLUMNS
@@ -101,6 +113,10 @@ WINSOR_COLUMNS = [
     "limit_cancel_ask_volume_rel",
     # level sizes can be heavy–tailed too:
     *LEVEL_SIZE_COLUMNS,
+    "buy_trade_volume_rel",
+    "sell_trade_volume_rel",
+    "ofi_bid",
+    "ofi_ask",
 ]
 
 WINSOR_LOWER = 0.001
@@ -1126,7 +1142,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s"
     )
-    logging.info("Starting Phase 1–4 validation with args: %s", vars(args))
+    logging.info("Starting Phase 1–5 validation with args: %s", vars(args))
 
     feature_files = discover_feature_files(
         args.feature_root, args.resolution, args.limit_files

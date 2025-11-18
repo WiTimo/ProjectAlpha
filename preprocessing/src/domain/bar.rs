@@ -5,7 +5,7 @@ use super::Resolution;
 use super::events::{
     MarketEvent, MarketEventKind, OrderFlowEvent, OrderFlowOperation, QuoteEvent, TradeEvent,
 };
-use super::order_book::{BookSide, OrderBookSnapshot};
+use super::order_book::{BookLevel, BookSide, OrderBookSnapshot};
 
 /// Unique identifier for a bar based on resolution + sequential index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,10 +40,18 @@ pub struct Bar {
     pub trade_volume_sum: f64,
     pub trade_volume_max: f64,
     pub trade_volume_weighted_price: f64,
+    pub buy_trade_volume: f64,
+    pub sell_trade_volume: f64,
+    pub buy_trade_count: usize,
+    pub sell_trade_count: usize,
+    pub buy_distance_to_ask_sum: f64,
+    pub sell_distance_to_bid_sum: f64,
     pub limit_add_bid_volume: f64,
     pub limit_add_ask_volume: f64,
     pub limit_cancel_bid_volume: f64,
     pub limit_cancel_ask_volume: f64,
+    pub ofi_bid: f64,
+    pub ofi_ask: f64,
 }
 
 impl Bar {
@@ -72,10 +80,18 @@ pub struct BarAccumulator {
     trade_volume_sum: f64,
     trade_volume_max: f64,
     trade_volume_weighted_price: f64,
+    buy_trade_volume: f64,
+    sell_trade_volume: f64,
+    buy_trade_count: usize,
+    sell_trade_count: usize,
+    buy_distance_to_ask_sum: f64,
+    sell_distance_to_bid_sum: f64,
     limit_add_bid_volume: f64,
     limit_add_ask_volume: f64,
     limit_cancel_bid_volume: f64,
     limit_cancel_ask_volume: f64,
+    ofi_bid: f64,
+    ofi_ask: f64,
 }
 
 impl BarAccumulator {
@@ -98,10 +114,18 @@ impl BarAccumulator {
             trade_volume_sum: 0.0,
             trade_volume_max: 0.0,
             trade_volume_weighted_price: 0.0,
+            buy_trade_volume: 0.0,
+            sell_trade_volume: 0.0,
+            buy_trade_count: 0,
+            sell_trade_count: 0,
+            buy_distance_to_ask_sum: 0.0,
+            sell_distance_to_bid_sum: 0.0,
             limit_add_bid_volume: 0.0,
             limit_add_ask_volume: 0.0,
             limit_cancel_bid_volume: 0.0,
             limit_cancel_ask_volume: 0.0,
+            ofi_bid: 0.0,
+            ofi_ask: 0.0,
         }
     }
 
@@ -144,15 +168,24 @@ impl BarAccumulator {
             trade_volume_sum: self.trade_volume_sum,
             trade_volume_max: self.trade_volume_max,
             trade_volume_weighted_price: self.trade_volume_weighted_price,
+            buy_trade_volume: self.buy_trade_volume,
+            sell_trade_volume: self.sell_trade_volume,
+            buy_trade_count: self.buy_trade_count,
+            sell_trade_count: self.sell_trade_count,
+            buy_distance_to_ask_sum: self.buy_distance_to_ask_sum,
+            sell_distance_to_bid_sum: self.sell_distance_to_bid_sum,
             limit_add_bid_volume: self.limit_add_bid_volume,
             limit_add_ask_volume: self.limit_add_ask_volume,
             limit_cancel_bid_volume: self.limit_cancel_bid_volume,
             limit_cancel_ask_volume: self.limit_cancel_ask_volume,
+            ofi_bid: self.ofi_bid,
+            ofi_ask: self.ofi_ask,
         })
     }
 
     fn update_quote(&mut self, quote: &QuoteEvent) {
         let mid = quote.mid_price;
+        self.accumulate_ofi(quote);
         if mid.is_finite() && mid > 0.0 {
             if self.mid_open.is_none() {
                 self.mid_open = Some(mid);
@@ -191,6 +224,7 @@ impl BarAccumulator {
             if trade.price.is_finite() {
                 self.trade_volume_weighted_price += trade.price * trade.size;
             }
+            self.update_aggressor_stats(trade);
         }
     }
 
@@ -216,6 +250,53 @@ impl BarAccumulator {
             }
         }
     }
+
+    fn accumulate_ofi(&mut self, quote: &QuoteEvent) {
+        let prev_bid = self.book.best_bid;
+        let prev_ask = self.book.best_ask;
+        self.ofi_bid += ofi_bid_contribution(prev_bid, quote.best_bid_price, quote.best_bid_size);
+        self.ofi_ask += ofi_ask_contribution(prev_ask, quote.best_ask_price, quote.best_ask_size);
+    }
+
+    fn update_aggressor_stats(&mut self, trade: &TradeEvent) {
+        let size = trade.size;
+        if !size.is_finite() || size <= 0.0 {
+            return;
+        }
+        match trade.aggressor {
+            Some(BookSide::Bid) => {
+                self.buy_trade_count += 1;
+                self.buy_trade_volume += size;
+                if let Some(dist) = self.distance_to_ask(trade.price) {
+                    self.buy_distance_to_ask_sum += dist;
+                }
+            }
+            Some(BookSide::Ask) => {
+                self.sell_trade_count += 1;
+                self.sell_trade_volume += size;
+                if let Some(dist) = self.distance_to_bid(trade.price) {
+                    self.sell_distance_to_bid_sum += dist;
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn distance_to_ask(&self, trade_price: f64) -> Option<f64> {
+        let ask = self.book.best_ask.price;
+        if !ask.is_finite() || ask <= 0.0 || !trade_price.is_finite() || trade_price <= 0.0 {
+            return None;
+        }
+        Some((ask - trade_price).max(0.0))
+    }
+
+    fn distance_to_bid(&self, trade_price: f64) -> Option<f64> {
+        let bid = self.book.best_bid.price;
+        if !bid.is_finite() || bid <= 0.0 || !trade_price.is_finite() || trade_price <= 0.0 {
+            return None;
+        }
+        Some((trade_price - bid).max(0.0))
+    }
 }
 
 impl Bar {
@@ -227,5 +308,37 @@ impl Bar {
         } else {
             None
         }
+    }
+}
+
+fn ofi_bid_contribution(prev: BookLevel, new_price: f64, new_size: f64) -> f64 {
+    if !new_price.is_finite() || new_price <= 0.0 || !new_size.is_finite() || new_size <= 0.0 {
+        return 0.0;
+    }
+    if !prev.price.is_finite() || prev.price <= 0.0 || !prev.size.is_finite() || prev.size <= 0.0 {
+        return 0.0;
+    }
+    if new_price > prev.price {
+        new_size
+    } else if new_price < prev.price {
+        -prev.size
+    } else {
+        new_size - prev.size
+    }
+}
+
+fn ofi_ask_contribution(prev: BookLevel, new_price: f64, new_size: f64) -> f64 {
+    if !new_price.is_finite() || new_price <= 0.0 || !new_size.is_finite() || new_size <= 0.0 {
+        return 0.0;
+    }
+    if !prev.price.is_finite() || prev.price <= 0.0 || !prev.size.is_finite() || prev.size <= 0.0 {
+        return 0.0;
+    }
+    if new_price < prev.price {
+        -new_size
+    } else if new_price > prev.price {
+        prev.size
+    } else {
+        prev.size - new_size
     }
 }
