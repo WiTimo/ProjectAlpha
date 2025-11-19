@@ -63,6 +63,19 @@ npm run training:multi         # dilated TCN on fast+mid+slow inputs
 npm run training:multi:regimes # multi-resolution regime-specific training with bundle export
 ```
 
+## Phase-5 single-head workflow
+
+- `python training/tcn.py` now defaults to `--primary-only`, so unless you pass `--allow-multi-targets` the run will
+  focus on the main `--target` (t40), matching the review guidance to stabilize the baseline before revisiting other
+  horizons.
+- Default hyperparameters favor a much smaller, better-regularized network (hidden=48, layers=2, dropout=0.3,
+  weight decay=1e-3) plus gradient clipping. This keeps the TCN honest relative to the elastic-net logistic baseline.
+- The logistic-regression reference automatically performs a threshold sweep on the validation split (net ticks by
+  default) and then reports train/val/test trade stats for the selected level, so you can ship a calibrated threshold
+  without a side notebook.
+- `npm run training` wraps the recommended command line (fast+mid+slow inputs, single-head model, logistic sweep) so you
+  can rerun the Phase-5 evaluation with a single shortcut.
+
 ### Splitting strategy
 
 Day-level splits reduce regime drift by ensuring each split consists of distinct trading days instead of interleaved rows.

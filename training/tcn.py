@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import math
+import textwrap
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -364,6 +366,20 @@ def parse_args() -> argparse.Namespace:
         default="t40",
         help="Target horizon identifier (e.g. 20, t40, target_t60)",
     )
+    primary_group = parser.add_mutually_exclusive_group()
+    primary_group.add_argument(
+        "--primary-only",
+        dest="primary_only",
+        action="store_true",
+        help="Force training to use only --target even if --targets is supplied",
+    )
+    primary_group.add_argument(
+        "--allow-multi-targets",
+        dest="primary_only",
+        action="store_false",
+        help="Honor the explicit --targets list instead of collapsing to --target",
+    )
+    parser.set_defaults(primary_only=True)
     parser.add_argument(
         "--limit-files",
         "--limit",
@@ -393,25 +409,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=1e-3,
+        default=5e-4,
         help="Adam learning rate",
     )
     parser.add_argument(
         "--dropout",
         type=float,
-        default=0.2,
+        default=0.3,
         help="Dropout probability inside TemporalBlocks",
     )
     parser.add_argument(
         "--tcn-hidden",
         type=int,
-        default=64,
+        default=48,
         help="Number of hidden channels in each dilated block",
     )
     parser.add_argument(
         "--tcn-layers",
         type=int,
-        default=4,
+        default=2,
         help="Number of dilated layers per stack",
     )
     parser.add_argument(
@@ -435,7 +451,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weight-decay",
         type=float,
-        default=1e-4,
+        default=1e-3,
         help="AdamW weight decay to curb overfitting",
     )
     parser.add_argument(
@@ -536,6 +552,36 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="Exponent applied to inverse frequency class weights (0 disables weighting)",
+    )
+    parser.add_argument(
+        "--max-gradient-norm",
+        type=float,
+        default=1.0,
+        help="Clip gradients to this L2 norm each step (0 disables clipping)",
+    )
+    parser.add_argument(
+        "--logistic-threshold-min",
+        type=float,
+        default=0.5,
+        help="Minimum probability threshold evaluated for the logistic baseline",
+    )
+    parser.add_argument(
+        "--logistic-threshold-max",
+        type=float,
+        default=0.8,
+        help="Maximum probability threshold evaluated for the logistic baseline",
+    )
+    parser.add_argument(
+        "--logistic-threshold-steps",
+        type=int,
+        default=7,
+        help="Number of evenly spaced thresholds to sweep for the logistic baseline",
+    )
+    parser.add_argument(
+        "--logistic-threshold-metric",
+        choices=["net_ticks", "win_rate", "entries"],
+        default="net_ticks",
+        help="Metric used to pick the best logistic threshold on the validation split",
     )
     parser.add_argument(
         "--enable-regime-training",
@@ -973,8 +1019,37 @@ def augment_with_multi_resolution_inputs(
                 "Dropping %d row(s) lacking complete multi-resolution features", count
             )
             augmented = augmented.loc[~na_mask].copy()
+        invalid_aliases = [alias for alias in multi_cols if alias.count("@") != 1]
+        if invalid_aliases:
+            raise ValueError(
+                "Unexpected multi-resolution column aliases: %s"
+                % ", ".join(sorted(invalid_aliases))
+            )
+        sample = ", ".join(multi_cols[: min(8, len(multi_cols))])
+        logging.info(
+            "Augmented %d feature(s) with %d multi-resolution columns. Sample: %s",
+            len(column_map),
+            len(multi_cols),
+            sample,
+        )
 
     return augmented, column_map, multi_cols
+
+
+def validate_column_integrity(df: pd.DataFrame, context: str) -> None:
+    duplicate_cols = df.columns[df.columns.duplicated()].tolist()
+    if duplicate_cols:
+        raise ValueError(
+            "Duplicate column(s) detected in %s: %s"
+            % (context, ", ".join(sorted(set(duplicate_cols))))
+        )
+    suspicious = [col for col in df.columns if col.count("@") > 1]
+    if suspicious:
+        logging.warning(
+            "Suspicious column naming patterns observed in %s: %s",
+            context,
+            ", ".join(sorted(suspicious)[:10]),
+        )
 
 
 def expand_feature_columns(
@@ -1154,6 +1229,79 @@ def split_by_rows(
     return train, val, test
 
 
+def _format_ns_timestamp(value: int) -> str:
+    return pd.to_datetime(int(value), unit="ns", utc=True).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def verify_split_boundaries(splits: DatasetSplits) -> None:
+    required_col = "start_timestamp_ns"
+    if required_col not in splits.train.columns:
+        logging.warning(
+            "Split boundary verification skipped – %s missing", required_col
+        )
+        return
+    spans: Dict[str, Optional[Tuple[int, int]]] = {}
+    for name, df in (
+        ("train", splits.train),
+        ("val", splits.val),
+        ("test", splits.test),
+    ):
+        if df.empty:
+            spans[name] = None
+            logging.info("%s split is empty", name.capitalize())
+            continue
+        start = int(df[required_col].iloc[0])
+        end = int(df[required_col].iloc[-1])
+        spans[name] = (start, end)
+        logging.info(
+            "%s split spans %s -> %s (%d rows)",
+            name.capitalize(),
+            _format_ns_timestamp(start),
+            _format_ns_timestamp(end),
+            len(df),
+        )
+
+    def _check(order_a: str, order_b: str) -> None:
+        first, second = spans.get(order_a), spans.get(order_b)
+        if first is None or second is None:
+            return
+        if first[1] >= second[0]:
+            raise ValueError(
+                f"{order_a.capitalize()} and {order_b} splits overlap in time; check split parameters"
+            )
+
+    _check("train", "val")
+    _check("val", "test")
+
+
+def _drop_overlap(
+    prev: pd.DataFrame,
+    curr: pd.DataFrame,
+    label: str,
+    key: str = "start_timestamp_ns",
+) -> pd.DataFrame:
+    if prev.empty or curr.empty or key not in prev.columns or key not in curr.columns:
+        return curr
+    boundary = prev[key].iloc[-1]
+    mask = curr[key] > boundary
+    if mask.all():
+        return curr
+    dropped = int((~mask).sum())
+    if dropped:
+        logging.warning(
+            "Removed %d overlapping row(s) from %s split to enforce strict ordering",
+            dropped,
+            label,
+        )
+    filtered = curr.loc[mask].copy()
+    filtered.reset_index(drop=True, inplace=True)
+    if filtered.empty:
+        raise ValueError(
+            f"Split '{label}' became empty after removing overlapping timestamps; adjust split parameters"
+        )
+    return filtered
+
+
 def split_by_days(
     df: pd.DataFrame, val_days: int, test_days: int
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -1185,7 +1333,14 @@ def split_by_days(
         subset.reset_index(drop=True, inplace=True)
         return subset
 
-    return select(train_files), select(val_files), select(test_files)
+    train_df, val_df, test_df = (
+        select(train_files),
+        select(val_files),
+        select(test_files),
+    )
+    val_df = _drop_overlap(train_df, val_df, "validation")
+    test_df = _drop_overlap(val_df, test_df, "test")
+    return train_df, val_df, test_df
 
 
 def build_splits(
@@ -1251,6 +1406,94 @@ def build_dataloaders(
     )
 
 
+def build_threshold_grid(min_value: float, max_value: float, steps: int) -> np.ndarray:
+    min_value = float(min_value)
+    max_value = float(max_value)
+    if max_value < min_value:
+        min_value, max_value = max_value, min_value
+    if steps <= 1 or math.isclose(min_value, max_value):
+        return np.array([min_value])
+    return np.linspace(min_value, max_value, steps)
+
+
+def summarize_trade_simulation(
+    simulation: Dict[str, Any], target_ticks: float, stop_ticks: Optional[float]
+) -> Dict[str, float]:
+    stop_ticks = stop_ticks if stop_ticks and stop_ticks > 0 else target_ticks
+    closed = simulation["targets_hit"] + simulation["stops_hit"]
+    win_rate = simulation["targets_hit"] / closed if closed > 0 else float("nan")
+    net_ticks = (
+        simulation["targets_hit"] * target_ticks - simulation["stops_hit"] * stop_ticks
+    )
+    return {
+        "entries": int(simulation["entries"]),
+        "entry_rate": float(simulation["entry_rate"]),
+        "win_rate": float(win_rate),
+        "targets_hit": int(simulation["targets_hit"]),
+        "stops_hit": int(simulation["stops_hit"]),
+        "avg_hold_bars": float(simulation["avg_hold_bars"]),
+        "net_ticks": float(net_ticks),
+        "rows": int(simulation["rows"]),
+    }
+
+
+def simulate_with_threshold(
+    probabilities: np.ndarray,
+    price_series: Dict[str, np.ndarray],
+    threshold: float,
+    trade_params: Dict[str, float],
+) -> Dict[str, float]:
+    sim = simulate_trade_entries(
+        probabilities,
+        price_series,
+        threshold,
+        trade_params["target_ticks"],
+        trade_params["tick_size"],
+        int(trade_params["seq_len"]),
+        trade_params.get("stop_ticks"),
+    )
+    summary = summarize_trade_simulation(
+        sim,
+        trade_params["target_ticks"],
+        trade_params.get("stop_ticks"),
+    )
+    summary["threshold"] = float(threshold)
+    return summary
+
+
+def select_best_threshold(
+    probabilities: np.ndarray,
+    price_series: Dict[str, np.ndarray],
+    thresholds: np.ndarray,
+    trade_params: Dict[str, float],
+    metric: str,
+) -> Optional[Dict[str, Any]]:
+    if probabilities.size == 0 or thresholds.size == 0:
+        return None
+    metric_key = {
+        "net_ticks": "net_ticks",
+        "win_rate": "win_rate",
+        "entries": "entries",
+    }[metric]
+    best: Optional[Dict[str, Any]] = None
+    for threshold in thresholds:
+        summary = simulate_with_threshold(
+            probabilities, price_series, threshold, trade_params
+        )
+        value = summary[metric_key]
+        if isinstance(value, float) and not math.isfinite(value):
+            comparator = float("-inf")
+        else:
+            comparator = float(value)
+        if best is None or comparator > best["metric_value"]:
+            best = {
+                "threshold": float(threshold),
+                "metric_value": comparator,
+                "summary": summary,
+            }
+    return best
+
+
 def run_logistic_baseline(
     train_x: np.ndarray,
     val_x: np.ndarray,
@@ -1258,11 +1501,15 @@ def run_logistic_baseline(
     train_targets: np.ndarray,
     val_targets: np.ndarray,
     test_targets: np.ndarray,
-) -> None:
+    price_series: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
+    trade_params: Optional[Dict[str, float]] = None,
+    threshold_grid: Optional[np.ndarray] = None,
+    threshold_metric: str = "net_ticks",
+) -> Optional[Dict[str, Any]]:
     logging.info("Running logistic-regression baseline for reference")
     if train_targets.shape[1] == 0:
         logging.warning("Baseline skipped – no target columns available")
-        return
+        return None
     train_y = primary_positive_mask(train_targets).astype(int)
     val_y = primary_positive_mask(val_targets).astype(int)
     test_y = primary_positive_mask(test_targets).astype(int)
@@ -1279,21 +1526,77 @@ def run_logistic_baseline(
         clf.fit(train_x, train_y)
     except Exception as exc:  # pragma: no cover - defensive logging only
         logging.warning("Logistic regression baseline failed: %s", exc)
-        return
+        return None
 
+    classification_metrics: Dict[str, Dict[str, float]] = {}
+    probabilities_by_split: Dict[str, np.ndarray] = {}
     for name, features, targets in (
         ("train", train_x, train_y),
         ("val", val_x, val_y),
         ("test", test_x, test_y),
     ):
         probs = clf.predict_proba(features)[:, 1]
+        probs = probs.astype(np.float32, copy=False)
+        probabilities_by_split[name] = probs
         preds = (probs >= 0.5).astype(int)
         acc = accuracy_score(preds, targets.astype(int))
         try:
             auc = roc_auc_score(targets, probs)
         except ValueError:
             auc = float("nan")
+        classification_metrics[name] = {"acc": float(acc), "auc": float(auc)}
         logging.info("LogReg %s: acc=%.3f auc=%.3f", name, acc, auc)
+
+    summary: Dict[str, Any] = {"classification": classification_metrics}
+    if price_series and trade_params and threshold_grid is not None:
+        val_prices = price_series.get("val")
+        if val_prices is None:
+            logging.warning(
+                "Logistic threshold sweep skipped – missing val price series"
+            )
+        else:
+            best = select_best_threshold(
+                probabilities_by_split["val"],
+                val_prices,
+                threshold_grid,
+                trade_params,
+                threshold_metric,
+            )
+            if best:
+                reports: Dict[str, Dict[str, float]] = {}
+                for split_name in ("train", "val", "test"):
+                    prices = price_series.get(split_name)
+                    probs = probabilities_by_split.get(split_name)
+                    if prices is None or probs is None:
+                        continue
+                    reports[split_name] = simulate_with_threshold(
+                        probs,
+                        prices,
+                        best["threshold"],
+                        trade_params,
+                    )
+                summary["trade_threshold"] = {
+                    "metric": threshold_metric,
+                    "threshold": best["threshold"],
+                    "val_metric": best["metric_value"],
+                    "reports": reports,
+                }
+                val_report = reports.get("val")
+                if val_report:
+                    logging.info(
+                        "LogReg threshold sweep best=%.3f metric=%s val_net=%.2f entries=%d win=%.3f",
+                        best["threshold"],
+                        threshold_metric,
+                        val_report.get("net_ticks", float("nan")),
+                        val_report.get("entries", 0),
+                        val_report.get("win_rate", float("nan")),
+                    )
+            else:
+                logging.warning(
+                    "Logistic threshold sweep skipped – unable to evaluate candidates"
+                )
+
+    return summary
 
 
 # -------------------------------------------------------
@@ -1572,6 +1875,7 @@ def train_model(
     min_delta: float,
     model_cfg: Dict[str, Any],
     target_configs: List[TargetConfig],
+    max_grad_norm: float,
 ) -> Tuple[nn.Module, List[Dict[str, float]]]:
     train_loader, val_loader, _ = loaders
     num_targets = len(target_configs)
@@ -1607,6 +1911,8 @@ def train_model(
                 loss_terms.append(cfg.weight * ce)
             loss = torch.stack(loss_terms).sum()
             loss.backward()
+            if max_grad_norm > 0:
+                clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
             running_loss += loss.item()
             batches += 1
@@ -1668,6 +1974,7 @@ def run_training_for_feature_set(
         target_columns=[cfg.column for cfg in args.target_configs],
         external_test=external_test_df,
     )
+    verify_split_boundaries(splits)
 
     price_series = {
         "train": extract_price_series(splits.train),
@@ -1691,20 +1998,38 @@ def run_training_for_feature_set(
         stds,
     ) = arrays
     logging.info(
-        "[%s] Active feature columns (%d): %s",
+        "[%s] Active feature columns (%d):\n%s",
         run_label,
         len(active_cols),
-        ", ".join(active_cols),
+        textwrap.fill(", ".join(active_cols), width=120),
     )
 
+    logistic_summary: Optional[Dict[str, Any]] = None
     if enable_baseline and not args.skip_baseline:
-        run_logistic_baseline(
+        trade_params = {
+            "target_ticks": float(args.trade_target_ticks),
+            "stop_ticks": (
+                None if args.trade_stop_ticks is None else float(args.trade_stop_ticks)
+            ),
+            "tick_size": float(args.instrument_tick_size),
+            "seq_len": int(args.sequence_len),
+        }
+        threshold_grid = build_threshold_grid(
+            args.logistic_threshold_min,
+            args.logistic_threshold_max,
+            args.logistic_threshold_steps,
+        )
+        logistic_summary = run_logistic_baseline(
             train_x,
             val_x,
             test_x,
             train_targets,
             val_targets,
             test_targets,
+            price_series=price_series,
+            trade_params=trade_params,
+            threshold_grid=threshold_grid,
+            threshold_metric=args.logistic_threshold_metric,
         )
 
     model_cfg = {
@@ -1738,6 +2063,7 @@ def run_training_for_feature_set(
         args.min_delta,
         model_cfg,
         target_configs,
+        args.max_gradient_norm,
     )
 
     eval_loaders = {
@@ -1829,6 +2155,7 @@ def run_training_for_feature_set(
             for split in ("train", "val", "test")
         },
         "trade_exec": trade_exec,
+        "logistic_baseline": logistic_summary,
     }
 
 
@@ -2063,9 +2390,31 @@ def main() -> None:
         raise RuntimeError("No target columns were generated from the labels")
     primary_target = resolve_target_column_name(args.target)
     requested_targets = args.targets or [args.target]
-    training_targets = resolve_requested_targets(
+    resolved_targets = resolve_requested_targets(
         requested_targets, args.target, target_columns
     )
+    weight_map: Optional[Dict[str, float]] = None
+    if args.target_loss_weights:
+        if len(args.target_loss_weights) != len(resolved_targets):
+            raise ValueError(
+                "--target-loss-weights must match the resolved --targets list"
+            )
+        weight_map = {
+            column: float(weight)
+            for column, weight in zip(resolved_targets, args.target_loss_weights)
+        }
+    training_targets = resolved_targets
+    if getattr(args, "primary_only", False):
+        if primary_target not in training_targets:
+            training_targets.insert(0, primary_target)
+        training_targets = [primary_target]
+        logging.info(
+            "primary-only enabled – restricting training to %s", primary_target
+        )
+    effective_loss_weights: Optional[List[float]] = None
+    if weight_map is not None:
+        effective_loss_weights = [weight_map[target] for target in training_targets]
+    args.target_loss_weights = effective_loss_weights
     setattr(args, "target_column", primary_target)
     setattr(args, "target_columns", training_targets)
     logging.info(
@@ -2094,6 +2443,7 @@ def main() -> None:
     setattr(args, "target_configs", target_configs)
     ensure_feature_columns(dataset, required_columns)
     ensure_feature_columns(dataset, PRICE_COLUMNS)
+    validate_column_integrity(dataset, "training dataset (base)")
     data_quality_checks(dataset, FEATURE_SET_COLUMNS[args.feature_set])
 
     multi_resolution_cols: List[str] = []
@@ -2108,6 +2458,7 @@ def main() -> None:
                 FEATURE_SET_COLUMNS[args.feature_set],
             )
         )
+        validate_column_integrity(dataset, "training dataset (multi-resolution)")
         logging.info(
             "Added %d multi-resolution feature(s)",
             len(multi_resolution_cols),
@@ -2164,6 +2515,9 @@ def main() -> None:
                 resolution_plan[1:],
                 args.test_limit_files or args.limit_files,
                 FEATURE_SET_COLUMNS[args.feature_set],
+            )
+            validate_column_integrity(
+                external_test_df, "external test dataset (multi-resolution)"
             )
             missing_ext = [
                 col for col in multi_resolution_cols if col not in ext_multi_cols
