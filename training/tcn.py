@@ -9,6 +9,7 @@ sequences. Metrics and sanity checks are logged to stdout.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 from copy import deepcopy
@@ -105,6 +106,8 @@ FEATURE_SET_COLUMNS = {
 
 PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]
 
+SUPPORTED_RESOLUTIONS = ("fast", "mid", "slow")
+
 # Label mapping: 1 -> positive, 0/-1 -> negative
 LABEL_MAP = {1: 1.0, 0: 0.0, -1: 0.0}
 
@@ -134,6 +137,19 @@ WINSOR_LOWER = 0.001
 WINSOR_UPPER = 0.999
 
 
+def resolve_target_column_name(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned.startswith("target_"):
+        return cleaned
+    if cleaned.startswith("t") and cleaned[1:].isdigit():
+        return f"target_{cleaned}"
+    if cleaned.isdigit():
+        return f"target_t{cleaned}"
+    if cleaned.startswith("t"):
+        cleaned = cleaned[1:]
+    return f"target_{cleaned}"
+
+
 @dataclass
 class DatasetSplits:
     train: pd.DataFrame
@@ -141,25 +157,18 @@ class DatasetSplits:
     test: pd.DataFrame
     feature_cols: List[str]
     stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    target_column: str = "target_t40"
+
+
+@dataclass
+class LabelTable:
+    frame: pd.DataFrame
+    outcome_cols: List[str]
 
 
 # -------------------------------------------------------
 # Dataset + stats helpers
 # -------------------------------------------------------
-
-
-def summarize_split(name: str, df: pd.DataFrame) -> Dict[str, Any]:
-    stats = compute_split_stats(df)
-    logging.info(
-        "Split %s -> rows=%d hit_rate=%.3f mean_spread=%.2f mean_depth=%.2f mean_volume=%.2f",
-        name,
-        stats["rows"],
-        stats["hit_rate"],
-        stats["mean_spread"],
-        stats["mean_depth"],
-        stats["mean_volume"],
-    )
-    return stats
 
 
 class SequenceDataset(Dataset):
@@ -243,25 +252,43 @@ class TemporalBlock(nn.Module):
         return out + self.downsample(x)
 
 
-class TinyTCN(nn.Module):
+class DilatedTCN(nn.Module):
     def __init__(
         self,
         num_features: int,
-        hidden: int = 32,
-        levels: int = 2,
-        kernel: int = 3,
+        hidden: int = 64,
+        layers: int = 4,
+        stacks: int = 1,
+        kernel: int = 5,
+        dilation_base: int = 2,
         dropout: float = 0.1,
     ):
         super().__init__()
-        layers: List[nn.Module] = []
+        if layers < 1:
+            raise ValueError("tcn-layers must be >= 1")
+        if stacks < 1:
+            raise ValueError("tcn-stacks must be >= 1")
+        if kernel < 2:
+            raise ValueError("tcn-kernel must be >= 2")
+        if dilation_base < 1:
+            raise ValueError("tcn-dilation-base must be >= 1")
+
+        blocks: List[nn.Module] = []
         channels_in = num_features
-        for level in range(levels):
-            dilation = 2**level
-            block = TemporalBlock(channels_in, hidden, kernel, dilation, dropout)
-            layers.append(block)
-            channels_in = hidden
-        self.tcn = nn.Sequential(*layers)
-        self.classifier = nn.Sequential(
+        for _stack in range(stacks):
+            for level in range(layers):
+                dilation = dilation_base**level
+                block = TemporalBlock(channels_in, hidden, kernel, dilation, dropout)
+                blocks.append(block)
+                channels_in = hidden
+
+        self.tcn = nn.Sequential(*blocks)
+        self.project = nn.Sequential(
+            nn.Conv1d(hidden, hidden, kernel_size=1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.head = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
             nn.Linear(hidden, 1),
@@ -269,7 +296,8 @@ class TinyTCN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.tcn(x)
-        return self.classifier(features).squeeze(-1)
+        features = self.project(features)
+        return self.head(features).squeeze(-1)
 
 
 # -------------------------------------------------------
@@ -299,11 +327,27 @@ def parse_args() -> argparse.Namespace:
         help="Resolution folder to load",
     )
     parser.add_argument(
+        "--resolutions",
+        type=str,
+        nargs="+",
+        choices=sorted(SUPPORTED_RESOLUTIONS),
+        help=(
+            "Optional list of resolutions to combine (first entry is the base alignment);"
+            " overrides --resolution when supplied"
+        ),
+    )
+    parser.add_argument(
         "--feature-set",
         type=str,
         default="phase5",
         choices=sorted(FEATURE_SET_COLUMNS.keys()),
         help="Which feature group to train (phase4 excludes OFI/aggressor additions)",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="t40",
+        help="Target horizon identifier (e.g. 20, t40, target_t60)",
     )
     parser.add_argument(
         "--limit-files",
@@ -342,6 +386,36 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.2,
         help="Dropout probability inside TemporalBlocks",
+    )
+    parser.add_argument(
+        "--tcn-hidden",
+        type=int,
+        default=64,
+        help="Number of hidden channels in each dilated block",
+    )
+    parser.add_argument(
+        "--tcn-layers",
+        type=int,
+        default=4,
+        help="Number of dilated layers per stack",
+    )
+    parser.add_argument(
+        "--tcn-stacks",
+        type=int,
+        default=1,
+        help="Number of stacks (repetitions) of the dilation schedule",
+    )
+    parser.add_argument(
+        "--tcn-kernel",
+        type=int,
+        default=5,
+        help="Kernel size for the causal convolutions",
+    )
+    parser.add_argument(
+        "--tcn-dilation-base",
+        type=int,
+        default=2,
+        help="Base used to increase dilation per layer (e.g. 2 => 1,2,4,8)",
     )
     parser.add_argument(
         "--weight-decay",
@@ -429,6 +503,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Train an additional Phase 4 baseline (ignoring OFI/aggressor features) for comparison",
     )
+    parser.add_argument(
+        "--enable-regime-training",
+        action="store_true",
+        help="Train separate models per volatility regime and route during inference",
+    )
+    parser.add_argument(
+        "--regime-column",
+        type=str,
+        default="volatility_regime",
+        help="Column used to segment the dataset into volatility regimes",
+    )
+    parser.add_argument(
+        "--regime-values",
+        type=float,
+        nargs="*",
+        help="Explicit list of regime values to train (defaults to all unique values in the dataset)",
+    )
+    parser.add_argument(
+        "--min-regime-rows",
+        type=int,
+        default=5000,
+        help="Minimum number of rows required to train a regime-specific model",
+    )
+    parser.add_argument(
+        "--model-output-dir",
+        type=Path,
+        default=Path("runs") / "regimes",
+        help="Directory to store trained regime model bundles",
+    )
     return parser.parse_args()
 
 
@@ -453,20 +556,31 @@ def load_feature_frames(feature_files: Iterable[Path]) -> List[pd.DataFrame]:
     return frames
 
 
-def load_labels(label_root: Path, stems: Iterable[str]) -> Dict[str, pd.DataFrame]:
-    result: Dict[str, pd.DataFrame] = {}
+def load_labels(label_root: Path, stems: Iterable[str]) -> Dict[str, LabelTable]:
+    result: Dict[str, LabelTable] = {}
     for stem in stems:
         label_path = label_root / f"{stem}.parquet"
         if not label_path.exists():
             logging.warning("Missing label file for %s", stem)
             continue
-        # event_index and anchor_price are available but not needed for alignment here
-        table = pq.read_table(label_path, columns=["timestamp_ns", "outcome"])
+        table = pq.read_table(label_path)
         df = table.to_pandas()
-        df["binary"] = df["outcome"].map(LABEL_MAP)
-        df.dropna(subset=["binary"], inplace=True)
-        result[stem] = df
-        logging.info("Loaded labels for %s -> %d events", stem, len(df))
+        if "timestamp_ns" not in df.columns:
+            logging.warning("Label file %s missing timestamp_ns column", label_path)
+            continue
+        outcome_cols = [col for col in df.columns if col.startswith("outcome_")]
+        if not outcome_cols:
+            logging.warning("Label file %s has no outcome_* columns", label_path)
+            continue
+        subset_cols = ["timestamp_ns", *outcome_cols]
+        subset = df[subset_cols].copy()
+        result[stem] = LabelTable(frame=subset, outcome_cols=outcome_cols)
+        logging.info(
+            "Loaded labels for %s -> %d events (%s)",
+            stem,
+            len(subset),
+            ", ".join(outcome_cols),
+        )
     return result
 
 
@@ -475,19 +589,15 @@ def load_labels(label_root: Path, stems: Iterable[str]) -> Dict[str, pd.DataFram
 # -------------------------------------------------------
 
 
-def assign_labels_to_bars(features: pd.DataFrame, labels: pd.DataFrame) -> pd.Series:
-    """Assign a binary label to each bar.
+def assign_labels_to_bars(
+    features: pd.DataFrame, labels: pd.DataFrame, outcome_cols: List[str]
+) -> pd.DataFrame:
+    """Assign binary labels per target column to each bar."""
 
-    A bar is labeled 1 if *any* event inside that bar has outcome 1,
-    otherwise 0 (if at least one non-positive event), or NaN if no
-    events fall inside the bar.
-    """
     starts = features["start_timestamp_ns"].to_numpy()
     ends = features["end_timestamp_ns"].to_numpy()
     label_times = labels["timestamp_ns"].to_numpy()
-    target_values = labels["binary"].to_numpy()
 
-    # Map each label time to its bar index
     bar_indices = np.searchsorted(starts, label_times, side="right") - 1
     valid = (
         (bar_indices >= 0)
@@ -495,38 +605,54 @@ def assign_labels_to_bars(features: pd.DataFrame, labels: pd.DataFrame) -> pd.Se
         & (label_times < ends[bar_indices])
     )
 
-    bar_labels = np.full(len(features), np.nan, dtype=float)
+    result: Dict[str, np.ndarray] = {}
+    valid_bar_idx = (
+        bar_indices[valid].astype(int) if valid.any() else np.array([], dtype=int)
+    )
 
-    if valid.any():
-        # Only labels that fall strictly inside a bar
-        valid_bar_idx = bar_indices[valid].astype(int)
-        valid_vals = target_values[valid].astype(float)
+    for col in outcome_cols:
+        alias = col.replace("outcome_", "target_", 1)
+        bar_labels = np.full(len(features), np.nan, dtype=float)
+        if valid.any():
+            target_values = labels[col].map(LABEL_MAP).to_numpy()
+            valid_vals = target_values[valid].astype(float, copy=False)
+            tmp = pd.DataFrame({"bar_idx": valid_bar_idx, "val": valid_vals})
+            agg = tmp.groupby("bar_idx", sort=False)["val"].max()
+            bar_labels[agg.index.to_numpy()] = agg.to_numpy(dtype=float)
+        result[alias] = bar_labels
 
-        # Aggregate: bar label = max(binary) over all events in this bar
-        tmp = pd.DataFrame({"bar_idx": valid_bar_idx, "val": valid_vals})
-        agg = tmp.groupby("bar_idx", sort=False)["val"].max()
-
-        bar_labels[agg.index.to_numpy()] = agg.to_numpy(dtype=float)
-
-    return pd.Series(bar_labels, index=features.index, name="target")
+    return pd.DataFrame(result, index=features.index)
 
 
 def combine_feature_label_frames(
-    feature_frames: List[pd.DataFrame], label_frames: Dict[str, pd.DataFrame]
-) -> pd.DataFrame:
+    feature_frames: List[pd.DataFrame],
+    label_frames: Dict[str, LabelTable],
+) -> Tuple[pd.DataFrame, List[str]]:
     combined: List[pd.DataFrame] = []
+    resolved_targets: Optional[List[str]] = None
     for frame in feature_frames:
         stem = frame["source_file"].iloc[0]
-        labels = label_frames.get(stem)
-        if labels is None:
+        label_table = label_frames.get(stem)
+        if label_table is None:
             logging.warning("Skipping %s – no labels available", stem)
             continue
         frame = frame.copy()
-        frame["target"] = assign_labels_to_bars(frame, labels)
+        targets_df = assign_labels_to_bars(
+            frame, label_table.frame, label_table.outcome_cols
+        )
+        if resolved_targets is None:
+            resolved_targets = list(targets_df.columns)
+        mask = targets_df.notna().any(axis=1)
         before = len(frame)
-        frame.dropna(subset=["target"], inplace=True)
+        frame = frame.loc[mask].copy()
+        targets_df = targets_df.loc[mask]
+        for col in targets_df.columns:
+            frame[col] = targets_df[col].to_numpy()
         logging.info(
-            "Aligned %s -> kept %d/%d bars with labels", stem, len(frame), before
+            "Aligned %s -> kept %d/%d bars with labels",
+            stem,
+            len(frame),
+            before,
         )
         if not frame.empty:
             combined.append(frame)
@@ -535,7 +661,7 @@ def combine_feature_label_frames(
     df = pd.concat(combined, ignore_index=True)
     df.sort_values("start_timestamp_ns", inplace=True)
     df.reset_index(drop=True, inplace=True)
-    return df
+    return df, (resolved_targets or [])
 
 
 # -------------------------------------------------------
@@ -570,6 +696,146 @@ def ensure_feature_columns(df: pd.DataFrame, feature_cols: List[str]) -> None:
         raise KeyError(
             "Missing expected feature columns: " + ", ".join(sorted(missing))
         )
+
+
+def resolve_resolution_plan(args: argparse.Namespace) -> List[str]:
+    raw_plan = args.resolutions or [args.resolution]
+    plan: List[str] = []
+    for entry in raw_plan:
+        normalized = entry.lower()
+        if normalized not in SUPPORTED_RESOLUTIONS:
+            raise ValueError(
+                f"Unsupported resolution '{entry}'; choose from {SUPPORTED_RESOLUTIONS}"
+            )
+        if normalized not in plan:
+            plan.append(normalized)
+    return plan
+
+
+def load_resolution_feature_table(
+    feature_root: Path, resolution: str, limit_files: int
+) -> pd.DataFrame:
+    feature_files = discover_feature_files(feature_root, resolution, limit_files)
+    frames = load_feature_frames(feature_files)
+    if not frames:
+        raise RuntimeError(
+            f"No feature frames were loaded for resolution '{resolution}'"
+        )
+    df = pd.concat(frames, ignore_index=True)
+    if df.empty:
+        raise RuntimeError(f"Resolution '{resolution}' produced an empty feature table")
+    df.sort_values(["source_file", "start_timestamp_ns"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+
+def augment_with_multi_resolution_inputs(
+    dataset: pd.DataFrame,
+    feature_root: Path,
+    resolutions: List[str],
+    limit_files: int,
+    feature_cols: List[str],
+) -> Tuple[pd.DataFrame, Dict[str, List[str]], List[str]]:
+    if not resolutions:
+        return dataset, {}, []
+
+    if "source_file" not in dataset.columns:
+        raise KeyError("source_file column required for multi-resolution joins")
+
+    augmented = dataset.copy()
+    augmented.sort_values(["source_file", "start_timestamp_ns"], inplace=True)
+    augmented.reset_index(drop=True, inplace=True)
+    available_sources = set(augmented["source_file"].unique())
+    multi_cols: List[str] = []
+    column_map: Dict[str, List[str]] = {col: [] for col in feature_cols}
+
+    for resolution in resolutions:
+        other_df = load_resolution_feature_table(feature_root, resolution, limit_files)
+        other_df = other_df[other_df["source_file"].isin(available_sources)].copy()
+        if other_df.empty:
+            raise RuntimeError(
+                f"Resolution '{resolution}' has no overlapping source files with the base dataset"
+            )
+
+        ensure_feature_columns(other_df, feature_cols)
+        for meta_col in ("start_timestamp_ns", "end_timestamp_ns"):
+            if meta_col not in other_df.columns:
+                raise KeyError(
+                    f"Resolution '{resolution}' missing required column {meta_col}"
+                )
+
+        prefix = resolution
+        rename_map = {col: f"{prefix}__{col}" for col in feature_cols}
+        subset = other_df[
+            ["source_file", "start_timestamp_ns", "end_timestamp_ns", *feature_cols]
+        ].rename(
+            columns={
+                "start_timestamp_ns": f"{prefix}__start_timestamp_ns",
+                "end_timestamp_ns": f"{prefix}__end_timestamp_ns",
+                **rename_map,
+            }
+        )
+
+        start_col = f"{prefix}__start_timestamp_ns"
+        end_col = f"{prefix}__end_timestamp_ns"
+        subset.sort_values(["source_file", start_col], inplace=True)
+        merged = pd.merge_asof(
+            augmented,
+            subset,
+            left_on="start_timestamp_ns",
+            right_on=start_col,
+            by="source_file",
+            direction="backward",
+        )
+
+        coverage_mask = (
+            merged[end_col].notna()
+            & (merged["start_timestamp_ns"] >= merged[start_col])
+            & (merged["start_timestamp_ns"] < merged[end_col])
+        )
+        missing_rows = int((~coverage_mask).sum())
+        prefixed_cols = list(rename_map.values())
+        for base_col, pref_col in rename_map.items():
+            column_map.setdefault(base_col, []).append(pref_col)
+        if missing_rows:
+            logging.warning(
+                "[%s] Multi-resolution coverage missing for %d rows; leaving NaNs",
+                resolution,
+                missing_rows,
+            )
+            merged.loc[~coverage_mask, prefixed_cols] = np.nan
+        else:
+            logging.info(
+                "[%s] Multi-resolution coverage aligned for all rows", resolution
+            )
+
+        merged.drop(columns=[start_col, end_col], inplace=True)
+        augmented = merged
+        multi_cols.extend(prefixed_cols)
+
+    if multi_cols:
+        augmented.sort_values(["source_file", "start_timestamp_ns"], inplace=True)
+        for col in multi_cols:
+            augmented[col] = augmented.groupby("source_file")[col].ffill()
+        na_mask = augmented[multi_cols].isna().any(axis=1)
+        if na_mask.any():
+            count = int(na_mask.sum())
+            logging.warning(
+                "Dropping %d row(s) lacking complete multi-resolution features", count
+            )
+            augmented = augmented.loc[~na_mask].copy()
+        augmented.reset_index(drop=True, inplace=True)
+
+    return augmented, column_map, multi_cols
+
+
+def expand_feature_columns(
+    base_cols: List[str], multi_map: Dict[str, List[str]]
+) -> List[str]:
+    expanded = list(base_cols)
+    for col in base_cols:
+        expanded.extend(multi_map.get(col, []))
+    return expanded
 
 
 def winsorize_features(
@@ -613,7 +879,7 @@ def extract_price_series(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     }
 
 
-def compute_split_stats(df: pd.DataFrame) -> Dict[str, Any]:
+def compute_split_stats(df: pd.DataFrame, target_column: str) -> Dict[str, Any]:
     if df.empty:
         return {
             "rows": 0,
@@ -626,7 +892,7 @@ def compute_split_stats(df: pd.DataFrame) -> Dict[str, Any]:
 
     stats = {
         "rows": int(len(df)),
-        "hit_rate": df["target"].mean(),
+        "hit_rate": df[target_column].mean(),
         "mean_spread": df.get("spread_ticks", pd.Series(dtype=float)).mean(),
         "mean_depth": (
             df.get("cum_bid_size_l_rel", pd.Series(dtype=float))
@@ -638,7 +904,7 @@ def compute_split_stats(df: pd.DataFrame) -> Dict[str, Any]:
 
     if "start_timestamp_ns" in df.columns:
         hours = pd.to_datetime(df["start_timestamp_ns"], unit="ns", utc=True).dt.hour
-        hourly_df = pd.DataFrame({"hour": hours, "target": df["target"]})
+        hourly_df = pd.DataFrame({"hour": hours, "target": df[target_column]})
         grouped = hourly_df.groupby("hour", dropna=False).agg(
             rows=("target", "size"), win_rate=("target", "mean")
         )
@@ -670,6 +936,8 @@ def standardize_splits(
     np.ndarray,
     np.ndarray,
     List[str],
+    pd.Series,
+    pd.Series,
 ]:
     train, val, test = splits.train, splits.val, splits.test
 
@@ -698,14 +966,17 @@ def standardize_splits(
     for split in (train, val, test):
         split.loc[:, cols] = (split[cols] - means) / stds
 
+    target_col = splits.target_column
     return (
         train[cols].to_numpy(),
         val[cols].to_numpy(),
         test[cols].to_numpy(),
-        train["target"].to_numpy(),
-        val["target"].to_numpy(),
-        test["target"].to_numpy(),
+        train[target_col].to_numpy(),
+        val[target_col].to_numpy(),
+        test[target_col].to_numpy(),
         cols,
+        means,
+        stds,
     )
 
 
@@ -771,6 +1042,7 @@ def build_splits(
     val_days: int,
     test_days: int,
     feature_cols: List[str],
+    target_column: str,
     external_test: Optional[pd.DataFrame] = None,
 ) -> DatasetSplits:
     if split_mode == "rows":
@@ -787,11 +1059,12 @@ def build_splits(
         val=val.reset_index(drop=True),
         test=test.reset_index(drop=True),
         feature_cols=feature_cols,
+        target_column=target_column,
     )
     splits.stats = {
-        "train": summarize_split("train", splits.train),
-        "val": summarize_split("val", splits.val),
-        "test": summarize_split("test", splits.test),
+        "train": summarize_split("train", splits.train, target_column),
+        "val": summarize_split("val", splits.val, target_column),
+        "test": summarize_split("test", splits.test, target_column),
     }
     return splits
 
@@ -1089,13 +1362,13 @@ def train_model(
     epochs: int,
     lr: float,
     device: torch.device,
-    dropout: float,
     weight_decay: float,
     patience: int,
     min_delta: float,
+    model_cfg: Dict[str, Any],
 ) -> Tuple[nn.Module, List[Dict[str, float]]]:
     train_loader, val_loader, _ = loaders
-    model = TinyTCN(num_features, dropout=dropout).to(device)
+    model = DilatedTCN(num_features=num_features, **model_cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.BCEWithLogitsLoss()
     history: List[Dict[str, float]] = []
@@ -1168,6 +1441,7 @@ def run_training_for_feature_set(
         val_days=args.val_days,
         test_days=args.test_days,
         feature_cols=feature_cols,
+        target_column=args.target_column,
         external_test=external_test_df,
     )
 
@@ -1186,6 +1460,8 @@ def run_training_for_feature_set(
         val_y,
         test_y,
         active_cols,
+        means,
+        stds,
     ) = arrays
     logging.info(
         "[%s] Active feature columns (%d): %s",
@@ -1196,6 +1472,15 @@ def run_training_for_feature_set(
 
     if enable_baseline and not args.skip_baseline:
         run_logistic_baseline(train_x, val_x, test_x, train_y, val_y, test_y)
+
+    model_cfg = {
+        "hidden": args.tcn_hidden,
+        "layers": args.tcn_layers,
+        "stacks": args.tcn_stacks,
+        "kernel": args.tcn_kernel,
+        "dilation_base": args.tcn_dilation_base,
+        "dropout": args.dropout,
+    }
 
     loaders = build_dataloaders(
         train_x,
@@ -1214,10 +1499,10 @@ def run_training_for_feature_set(
         args.epochs,
         args.learning_rate,
         device,
-        args.dropout,
         args.weight_decay,
         args.patience,
         args.min_delta,
+        model_cfg,
     )
 
     train_acc, train_auc = evaluate(model, loaders[0], device)
@@ -1264,9 +1549,12 @@ def run_training_for_feature_set(
         trade_exec["test"],
     )
 
+    cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
     return {
         "label": run_label,
         "active_cols": active_cols,
+        "scaler": {"means": means.to_dict(), "stds": stds.to_dict()},
+        "model_state_dict": cpu_state,
         "metrics": {
             "train": {"acc": train_acc, "auc": train_auc},
             "val": {"acc": val_acc, "auc": val_auc},
@@ -1274,6 +1562,177 @@ def run_training_for_feature_set(
         },
         "trade_exec": trade_exec,
     }
+
+
+def _serialize_args(args: argparse.Namespace) -> Dict[str, Any]:
+    serialized: Dict[str, Any] = {}
+    for key, value in vars(args).items():
+        if isinstance(value, Path):
+            serialized[key] = str(value)
+        else:
+            serialized[key] = value
+    return serialized
+
+
+def format_regime_value(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def save_regime_bundle(
+    result: Dict[str, Any],
+    args: argparse.Namespace,
+    regime_value: Any,
+) -> Path:
+    output_dir = Path(args.model_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    regime_str = format_regime_value(regime_value)
+    filename = f"{result['label']}_regime_{regime_str}.pt"
+    path = output_dir / filename
+    bundle = {
+        "regime_value": regime_value,
+        "label": result["label"],
+        "feature_set": args.feature_set,
+        "target_column": args.target_column,
+        "feature_columns": result["active_cols"],
+        "scaler": result["scaler"],
+        "state_dict": result["model_state_dict"],
+        "metrics": result["metrics"],
+        "training": {
+            "sequence_len": args.sequence_len,
+            "model": {
+                "hidden": args.tcn_hidden,
+                "layers": args.tcn_layers,
+                "stacks": args.tcn_stacks,
+                "kernel": args.tcn_kernel,
+                "dilation_base": args.tcn_dilation_base,
+                "dropout": args.dropout,
+            },
+            "optimizer": {
+                "learning_rate": args.learning_rate,
+                "weight_decay": args.weight_decay,
+                "patience": args.patience,
+                "min_delta": args.min_delta,
+                "epochs": args.epochs,
+            },
+        },
+        "cli_args": _serialize_args(args),
+    }
+    torch.save(bundle, path)
+    logging.info("Saved regime %s bundle -> %s", regime_str, path)
+    return path
+
+
+def write_regime_manifest(
+    regime_runs: List[Dict[str, Any]], args: argparse.Namespace, output_dir: Path
+) -> None:
+    manifest = {
+        "target": args.target_column,
+        "feature_set": args.feature_set,
+        "regime_column": args.regime_column,
+        "models": [],
+    }
+    for run in regime_runs:
+        bundle_path = run.get("bundle_path")
+        manifest["models"].append(
+            {
+                "regime_value": run["regime_value"],
+                "bundle": str(Path(bundle_path).name) if bundle_path else None,
+                "metrics": run["metrics"].get("test"),
+                "features": run["active_cols"],
+            }
+        )
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    logging.info("Wrote regime manifest -> %s", manifest_path)
+
+
+def train_multi_regime_models(
+    dataset: pd.DataFrame,
+    external_test_df: Optional[pd.DataFrame],
+    args: argparse.Namespace,
+    device: torch.device,
+) -> List[Dict[str, Any]]:
+    regime_col = args.regime_column
+    if regime_col not in dataset.columns:
+        raise KeyError(
+            f"Regime column '{regime_col}' not found in training dataset columns"
+        )
+
+    regimes: List[Any]
+    if args.regime_values:
+        regimes = list(args.regime_values)
+    else:
+        regimes = sorted(dataset[regime_col].dropna().unique().tolist())
+    if not regimes:
+        raise RuntimeError(
+            "Unable to infer regime values; ensure the dataset includes non-null entries"
+        )
+
+    logging.info(
+        "Training multi-regime models using %s values: %s",
+        regime_col,
+        ", ".join(format_regime_value(v) for v in regimes),
+    )
+
+    regime_runs: List[Dict[str, Any]] = []
+    multi_map = getattr(args, "multi_resolution_map", {})
+    feature_cols = expand_feature_columns(
+        FEATURE_SET_COLUMNS[args.feature_set], multi_map
+    )
+    external_has_regime = (
+        external_test_df is not None and regime_col in external_test_df.columns
+    )
+
+    for value in regimes:
+        mask = dataset[regime_col] == value
+        subset = dataset.loc[mask].copy()
+        if len(subset) < args.min_regime_rows:
+            logging.warning(
+                "Skipping regime %s – only %d rows (< min-regime-rows=%d)",
+                format_regime_value(value),
+                len(subset),
+                args.min_regime_rows,
+            )
+            continue
+
+        ext_subset = None
+        if external_has_regime:
+            ext_mask = external_test_df[regime_col] == value
+            regime_external = external_test_df.loc[ext_mask].copy()
+            if not regime_external.empty:
+                ext_subset = regime_external
+
+        run_label = f"{args.feature_set}-regime{format_regime_value(value)}"
+        logging.info(
+            "[%s] rows=%d (test rows=%s)",
+            run_label,
+            len(subset),
+            len(ext_subset) if ext_subset is not None else "n/a",
+        )
+        result = run_training_for_feature_set(
+            run_label,
+            feature_cols,
+            subset,
+            ext_subset,
+            args,
+            device,
+            enable_baseline=False,
+        )
+        result["regime_value"] = value
+        bundle_path = save_regime_bundle(result, args, value)
+        result["bundle_path"] = str(bundle_path)
+        regime_runs.append(result)
+
+    if not regime_runs:
+        raise RuntimeError(
+            "No regime-specific models were trained – revise min-regime-rows or data availability"
+        )
+
+    output_dir = Path(args.model_output_dir)
+    write_regime_manifest(regime_runs, args, output_dir)
+    return regime_runs
 
 
 def log_phase_comparison(baseline: Dict[str, Any], contender: Dict[str, Any]) -> None:
@@ -1308,47 +1767,159 @@ def main() -> None:
     )
     logging.info("Starting Phase 1–5 validation with args: %s", vars(args))
 
+    resolution_plan = resolve_resolution_plan(args)
+    setattr(args, "resolution_plan", resolution_plan)
+    primary_resolution = resolution_plan[0]
+    if len(resolution_plan) > 1:
+        logging.info(
+            "Using multi-resolution inputs: base=%s extras=%s",
+            primary_resolution,
+            ", ".join(resolution_plan[1:]),
+        )
+    else:
+        logging.info("Training with single resolution: %s", primary_resolution)
+
     feature_files = discover_feature_files(
-        args.feature_root, args.resolution, args.limit_files
+        args.feature_root, primary_resolution, args.limit_files
     )
     feature_frames = load_feature_frames(feature_files)
     label_frames = load_labels(args.label_root, [f.stem for f in feature_files])
-    dataset = combine_feature_label_frames(feature_frames, label_frames)
+    dataset, target_columns = combine_feature_label_frames(feature_frames, label_frames)
+    if not target_columns:
+        raise RuntimeError("No target columns were generated from the labels")
+    target_column = resolve_target_column_name(args.target)
+    if target_column not in target_columns:
+        raise ValueError(
+            f"Requested target '{target_column}' not available; choose from {target_columns}"
+        )
+    setattr(args, "target_column", target_column)
+    logging.info(
+        "Available targets: %s (selected %s)",
+        ", ".join(target_columns),
+        target_column,
+    )
     requested_sets = {args.feature_set}
     if args.compare_phase4:
         requested_sets.add("phase4")
     required_columns = sorted(
         {col for name in requested_sets for col in FEATURE_SET_COLUMNS[name]}
     )
+    dataset.dropna(subset=[target_column], inplace=True)
+    dataset.reset_index(drop=True, inplace=True)
+    if dataset.empty:
+        raise RuntimeError(
+            f"No feature rows remain after aligning labels for {target_column}"
+        )
     ensure_feature_columns(dataset, required_columns)
     ensure_feature_columns(dataset, PRICE_COLUMNS)
     data_quality_checks(dataset, FEATURE_SET_COLUMNS[args.feature_set])
+
+    multi_resolution_cols: List[str] = []
+    multi_resolution_map: Dict[str, List[str]] = {}
+    if len(resolution_plan) > 1:
+        dataset, multi_resolution_map, multi_resolution_cols = (
+            augment_with_multi_resolution_inputs(
+                dataset,
+                args.feature_root,
+                resolution_plan[1:],
+                args.limit_files,
+                FEATURE_SET_COLUMNS[args.feature_set],
+            )
+        )
+        logging.info(
+            "Added %d multi-resolution feature(s)",
+            len(multi_resolution_cols),
+        )
+    setattr(args, "multi_resolution_map", multi_resolution_map)
 
     external_test_df: Optional[pd.DataFrame] = None
     if args.feature_root_test is not None:
         label_root_test = args.label_root_test or args.label_root
         test_feature_files = discover_feature_files(
-            args.feature_root_test, args.resolution, args.test_limit_files
+            args.feature_root_test, primary_resolution, args.test_limit_files
         )
         test_feature_frames = load_feature_frames(test_feature_files)
         test_label_frames = load_labels(
             label_root_test, [f.stem for f in test_feature_files]
         )
-        external_test_df = combine_feature_label_frames(
+        external_test_df, ext_targets = combine_feature_label_frames(
             test_feature_frames, test_label_frames
         )
+        if target_column not in ext_targets:
+            logging.warning(
+                "External test set missing target %s (available: %s)",
+                target_column,
+                ", ".join(ext_targets),
+            )
+        external_test_df.dropna(subset=[target_column], inplace=True)
+        external_test_df.reset_index(drop=True, inplace=True)
+        if external_test_df.empty:
+            logging.warning(
+                "External test set has no rows after filtering by %s",
+                target_column,
+            )
         ensure_feature_columns(external_test_df, required_columns)
         ensure_feature_columns(external_test_df, PRICE_COLUMNS)
         data_quality_checks(external_test_df, FEATURE_SET_COLUMNS[args.feature_set])
 
+        if len(resolution_plan) > 1 and not external_test_df.empty:
+            ext_root = args.feature_root_test or args.feature_root
+            (
+                external_test_df,
+                _ext_map,
+                ext_multi_cols,
+            ) = augment_with_multi_resolution_inputs(
+                external_test_df,
+                ext_root,
+                resolution_plan[1:],
+                args.test_limit_files or args.limit_files,
+                FEATURE_SET_COLUMNS[args.feature_set],
+            )
+            missing_ext = [
+                col for col in multi_resolution_cols if col not in ext_multi_cols
+            ]
+            if missing_ext:
+                logging.warning(
+                    "External test set missing %d multi-resolution column(s): %s",
+                    len(missing_ext),
+                    ", ".join(missing_ext),
+                )
+                dataset.drop(
+                    columns=[c for c in missing_ext if c in dataset], inplace=True
+                )
+                multi_resolution_cols = [
+                    col for col in multi_resolution_cols if col not in missing_ext
+                ]
+                for base_col, pref_list in list(multi_resolution_map.items()):
+                    updated = [c for c in pref_list if c not in missing_ext]
+                    if updated:
+                        multi_resolution_map[base_col] = updated
+                    else:
+                        multi_resolution_map.pop(base_col, None)
+
     device = torch.device(args.device)
+
+    active_feature_cols = expand_feature_columns(
+        FEATURE_SET_COLUMNS[args.feature_set], multi_resolution_map
+    )
+
+    if args.enable_regime_training:
+        if args.compare_phase4:
+            logging.warning(
+                "compare-phase4 is ignored while enable-regime-training is active"
+            )
+        train_multi_regime_models(dataset, external_test_df, args, device)
+        return
 
     baseline_run: Optional[Dict[str, Any]] = None
     if args.compare_phase4 and args.feature_set != "phase4":
         logging.info("Running Phase 4 baseline for comparison")
+        baseline_feature_cols = expand_feature_columns(
+            FEATURE_SET_COLUMNS["phase4"], multi_resolution_map
+        )
         baseline_run = run_training_for_feature_set(
             "phase4",
-            FEATURE_SET_COLUMNS["phase4"],
+            baseline_feature_cols,
             dataset,
             external_test_df,
             args,
@@ -1362,7 +1933,7 @@ def main() -> None:
 
     primary_run = run_training_for_feature_set(
         args.feature_set,
-        FEATURE_SET_COLUMNS[args.feature_set],
+        active_feature_cols,
         dataset,
         external_test_df,
         args,

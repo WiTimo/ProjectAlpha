@@ -23,13 +23,13 @@ impl LabelOutcome {
     }
 }
 
-/// Label tied to a particular event index and timestamp.
+/// Label tied to a particular event index and timestamp with multi-horizon outcomes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Label {
     pub event_index: usize,
     pub timestamp: OffsetDateTime,
-    pub outcome: LabelOutcome,
     pub anchor_price: f64,
+    pub outcomes: Vec<LabelOutcome>,
 }
 
 impl Label {
@@ -37,45 +37,35 @@ impl Label {
         event_index: usize,
         timestamp: OffsetDateTime,
         anchor_price: f64,
-        outcome: LabelOutcome,
+        outcomes: Vec<LabelOutcome>,
     ) -> Self {
         Self {
             event_index,
             timestamp,
-            outcome,
             anchor_price,
+            outcomes,
         }
     }
 }
 
-/// Summary statistics for sanity-checking the label distribution.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LabelStats {
+/// Per-target distribution statistics for sanity checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetLabelStats {
+    pub name: String,
     pub total: usize,
     pub hit_up: usize,
     pub hit_down: usize,
     pub no_hit: usize,
 }
 
-impl LabelStats {
-    pub fn from_labels(labels: &[Label]) -> Self {
-        let mut hit_up = 0;
-        let mut hit_down = 0;
-        let mut no_hit = 0;
-
-        for label in labels {
-            match label.outcome {
-                LabelOutcome::HitUp => hit_up += 1,
-                LabelOutcome::HitDown => hit_down += 1,
-                LabelOutcome::NoHit => no_hit += 1,
-            }
-        }
-
+impl TargetLabelStats {
+    fn new(name: impl Into<String>) -> Self {
         Self {
-            total: labels.len(),
-            hit_up,
-            hit_down,
-            no_hit,
+            name: name.into(),
+            total: 0,
+            hit_up: 0,
+            hit_down: 0,
+            no_hit: 0,
         }
     }
 
@@ -88,6 +78,43 @@ impl LabelStats {
     }
 }
 
+/// Summary statistics for all configured targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelStats {
+    pub per_target: Vec<TargetLabelStats>,
+}
+
+impl LabelStats {
+    pub fn from_labels(labels: &[Label], target_names: &[String]) -> Self {
+        let mut per_target: Vec<TargetLabelStats> = target_names
+            .iter()
+            .map(|name| TargetLabelStats::new(name))
+            .collect();
+
+        for label in labels {
+            for (idx, outcome) in label.outcomes.iter().enumerate() {
+                if let Some(stats) = per_target.get_mut(idx) {
+                    stats.total += 1;
+                    match outcome {
+                        LabelOutcome::HitUp => stats.hit_up += 1,
+                        LabelOutcome::HitDown => stats.hit_down += 1,
+                        LabelOutcome::NoHit => stats.no_hit += 1,
+                    }
+                }
+            }
+        }
+
+        Self { per_target }
+    }
+
+    pub fn positive_ratio(&self, target_name: &str) -> Option<f64> {
+        self.per_target
+            .iter()
+            .find(|stats| stats.name == target_name)
+            .map(TargetLabelStats::positive_ratio)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,16 +124,18 @@ mod tests {
     fn stats_track_distribution() {
         let ts = datetime!(2025-01-01 00:00:00 UTC);
         let labels = vec![
-            Label::new(0, ts, 100.0, LabelOutcome::HitUp),
-            Label::new(1, ts, 100.0, LabelOutcome::HitDown),
-            Label::new(2, ts, 100.0, LabelOutcome::NoHit),
+            Label::new(0, ts, 100.0, vec![LabelOutcome::HitUp]),
+            Label::new(1, ts, 100.0, vec![LabelOutcome::HitDown]),
+            Label::new(2, ts, 100.0, vec![LabelOutcome::NoHit]),
         ];
 
-        let stats = LabelStats::from_labels(&labels);
-        assert_eq!(stats.total, 3);
-        assert_eq!(stats.hit_up, 1);
-        assert_eq!(stats.hit_down, 1);
-        assert_eq!(stats.no_hit, 1);
-        assert_eq!(stats.positive_ratio(), 1.0 / 3.0);
+        let stats = LabelStats::from_labels(&labels, &["t20".to_string()]);
+        assert_eq!(stats.per_target.len(), 1);
+        let target_stats = &stats.per_target[0];
+        assert_eq!(target_stats.total, 3);
+        assert_eq!(target_stats.hit_up, 1);
+        assert_eq!(target_stats.hit_down, 1);
+        assert_eq!(target_stats.no_hit, 1);
+        assert_eq!(target_stats.positive_ratio(), 1.0 / 3.0);
     }
 }

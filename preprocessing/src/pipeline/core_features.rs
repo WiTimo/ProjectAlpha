@@ -1,3 +1,4 @@
+use std::f64::consts::TAU;
 use std::fs;
 use std::path::Path;
 
@@ -11,6 +12,7 @@ use crate::config::NormalizationConfig;
 use crate::domain::{Bar, BarKey, BookLevel, OrderBookSnapshot};
 use crate::normalization::CausalScaler;
 use crate::utils::math::signed_log1p;
+use time::OffsetDateTime;
 
 const DEFAULT_RV_WINDOW: usize = 10;
 const LEVEL_FEATURE_COUNT: usize = 3;
@@ -19,6 +21,19 @@ const RV_MIN_OBSERVATIONS: usize = 2;
 const FLOW_REL_CLAMP: f64 = 25.0;
 const LIMIT_OF_IMBALANCE_CLAMP: f64 = 10.0;
 const TRADE_VOLUME_REL_CLAMP: f64 = 15.0;
+const US_SESSION_OPEN_SECONDS: i64 = 9 * 3600 + 30 * 60;
+const US_SESSION_CLOSE_SECONDS: i64 = 16 * 3600;
+const US_SESSION_LENGTH_SECONDS: f64 = (US_SESSION_CLOSE_SECONDS - US_SESSION_OPEN_SECONDS) as f64;
+const SPREAD_LOW_TICKS: f64 = 2.0;
+const SPREAD_HIGH_TICKS: f64 = 6.0;
+const DEPTH_LOW_REL: f64 = 1.0;
+const DEPTH_HIGH_REL: f64 = 3.0;
+const VOLUME_LOW_REL: f64 = 0.5;
+const VOLUME_HIGH_REL: f64 = 1.5;
+const VOLATILITY_LOW_ABS: f64 = 0.0005;
+const VOLATILITY_HIGH_ABS: f64 = 0.0015;
+const SPEED_LOW_TPS: f64 = 0.5;
+const SPEED_HIGH_TPS: f64 = 1.5;
 
 pub struct CoreFeatureExtractor {
     tick_size: f64,
@@ -72,6 +87,8 @@ impl CoreFeatureExtractor {
         let volume_scaled = self.scaler.normalize_volume(bar.trade_volume_sum);
         let trade_volume_sum_rel = clamp_trade_volume(volume_scaled.relative);
         let trade_count_log = (bar.trade_count as f64).ln_1p();
+        let duration_secs = bar.duration().as_seconds_f64().max(1e-6);
+        let speed_tps = bar.trade_count as f64 / duration_secs;
         let volume_divisor = volume_scaled.divisor.abs() + self.epsilon;
         let buy_trade_volume_rel = if volume_divisor > 0.0 {
             bar.buy_trade_volume / volume_divisor
@@ -83,17 +100,12 @@ impl CoreFeatureExtractor {
         } else {
             0.0
         };
-        let trade_imbalance_ratio = if bar.buy_trade_volume <= self.epsilon
-            && bar.sell_trade_volume <= self.epsilon
-        {
-            0.0
-        } else {
-            compute_depth_imbalance(
-                bar.buy_trade_volume,
-                bar.sell_trade_volume,
-                self.epsilon,
-            )
-        };
+        let trade_imbalance_ratio =
+            if bar.buy_trade_volume <= self.epsilon && bar.sell_trade_volume <= self.epsilon {
+                0.0
+            } else {
+                compute_depth_imbalance(bar.buy_trade_volume, bar.sell_trade_volume, self.epsilon)
+            };
         let has_buy_trade = if bar.buy_trade_count > 0 { 1.0 } else { 0.0 };
         let has_sell_trade = if bar.sell_trade_count > 0 { 1.0 } else { 0.0 };
         let avg_buy_dist_to_ask = average_distance_ticks(
@@ -115,6 +127,7 @@ impl CoreFeatureExtractor {
             0.0
         };
         let rv_log = (rv_var + self.epsilon).ln();
+        let rv_std = rv_var.sqrt();
 
         let cum_bid = bar.book.cumulative_bid_size();
         let cum_ask = bar.book.cumulative_ask_size();
@@ -157,11 +170,18 @@ impl CoreFeatureExtractor {
         let ofi_ask_rel = bar.ofi_ask / (cum_ask_scaled.divisor.abs() + self.epsilon);
         let ofi_bid_log = signed_log1p(ofi_bid_rel);
         let ofi_ask_log = signed_log1p(ofi_ask_rel);
-        let avg_depth = 0.5 * (cum_bid_scaled.divisor.abs() + cum_ask_scaled.divisor.abs())
-            + self.epsilon;
+        let avg_depth =
+            0.5 * (cum_bid_scaled.divisor.abs() + cum_ask_scaled.divisor.abs()) + self.epsilon;
         let ofi_net = bar.ofi_bid + bar.ofi_ask;
         let ofi_net_rel = ofi_net / avg_depth;
         let ofi_net_log = signed_log1p(ofi_net_rel);
+        let total_depth_rel = cum_bid_scaled.relative + cum_ask_scaled.relative;
+        let spread_regime = encode_regime(spread, SPREAD_LOW_TICKS, SPREAD_HIGH_TICKS);
+        let depth_regime = encode_regime(total_depth_rel, DEPTH_LOW_REL, DEPTH_HIGH_REL);
+        let volume_regime = encode_regime(trade_volume_sum_rel, VOLUME_LOW_REL, VOLUME_HIGH_REL);
+        let volatility_regime = encode_regime(rv_std, VOLATILITY_LOW_ABS, VOLATILITY_HIGH_ABS);
+        let speed_regime = encode_regime(speed_tps, SPEED_LOW_TPS, SPEED_HIGH_TPS);
+        let (tod_sin, tod_cos, is_us_session) = compute_tod_features(&bar.start);
 
         Some(CoreFeatureRow {
             key: bar.key,
@@ -188,6 +208,14 @@ impl CoreFeatureExtractor {
             avg_buy_dist_to_ask,
             avg_sell_dist_to_bid,
             rv_log,
+            tod_sin,
+            tod_cos,
+            is_us_session,
+            spread_regime,
+            depth_regime,
+            volume_regime,
+            volatility_regime,
+            speed_regime,
             bid_offset_level_ticks: level_bundle.bid_offsets,
             ask_offset_level_ticks: level_bundle.ask_offsets,
             bid_size_level_rel: level_bundle.bid_sizes_rel,
@@ -232,6 +260,14 @@ pub struct CoreFeatureRow {
     pub avg_buy_dist_to_ask: f64,
     pub avg_sell_dist_to_bid: f64,
     pub rv_log: f64,
+    pub tod_sin: f64,
+    pub tod_cos: f64,
+    pub is_us_session: f64,
+    pub spread_regime: f64,
+    pub depth_regime: f64,
+    pub volume_regime: f64,
+    pub volatility_regime: f64,
+    pub speed_regime: f64,
     pub bid_offset_level_ticks: [f64; LEVEL_FEATURE_COUNT],
     pub ask_offset_level_ticks: [f64; LEVEL_FEATURE_COUNT],
     pub bid_size_level_rel: [f64; LEVEL_FEATURE_COUNT],
@@ -370,6 +406,36 @@ fn clamp_trade_volume(value: f64) -> f64 {
         .min(TRADE_VOLUME_REL_CLAMP)
 }
 
+fn encode_regime(value: f64, low: f64, high: f64) -> f64 {
+    if !value.is_finite() {
+        0.0
+    } else if value < low {
+        -1.0
+    } else if value > high {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn compute_tod_features(ts: &OffsetDateTime) -> (f64, f64, f64) {
+    let time = ts.time();
+    let seconds = (time.hour() as i64) * 3600 + (time.minute() as i64) * 60 + time.second() as i64;
+    let fractional = (time.nanosecond() as f64) * 1e-9;
+    let seconds_since_open = (seconds - US_SESSION_OPEN_SECONDS) as f64 + fractional;
+    let session_length = US_SESSION_LENGTH_SECONDS.max(1.0);
+    let normalized = (seconds_since_open / session_length).rem_euclid(1.0);
+    let angle = normalized * TAU;
+    let tod_sin = angle.sin();
+    let tod_cos = angle.cos();
+    let weekday = ts.weekday().number_days_from_monday();
+    let is_weekday = weekday < 5;
+    let in_session =
+        is_weekday && seconds >= US_SESSION_OPEN_SECONDS && seconds <= US_SESSION_CLOSE_SECONDS;
+    let is_us_session = if in_session { 1.0 } else { 0.0 };
+    (tod_sin, tod_cos, is_us_session)
+}
+
 pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
@@ -405,6 +471,14 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         Field::new("avg_buy_dist_to_ask", DataType::Float64, false),
         Field::new("avg_sell_dist_to_bid", DataType::Float64, false),
         Field::new("rv_log", DataType::Float64, false),
+        Field::new("tod_sin", DataType::Float64, false),
+        Field::new("tod_cos", DataType::Float64, false),
+        Field::new("is_us_session", DataType::Float64, false),
+        Field::new("spread_regime", DataType::Float64, false),
+        Field::new("depth_regime", DataType::Float64, false),
+        Field::new("volume_regime", DataType::Float64, false),
+        Field::new("volatility_regime", DataType::Float64, false),
+        Field::new("speed_regime", DataType::Float64, false),
         Field::new("limit_add_bid_volume_rel", DataType::Float64, false),
         Field::new("limit_add_ask_volume_rel", DataType::Float64, false),
         Field::new("limit_cancel_bid_volume_rel", DataType::Float64, false),
@@ -489,6 +563,15 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     let avg_sell_dist_to_bid =
         Float64Array::from_iter_values(rows.iter().map(|r| r.avg_sell_dist_to_bid));
     let rv_log = Float64Array::from_iter_values(rows.iter().map(|r| r.rv_log));
+    let tod_sin = Float64Array::from_iter_values(rows.iter().map(|r| r.tod_sin));
+    let tod_cos = Float64Array::from_iter_values(rows.iter().map(|r| r.tod_cos));
+    let is_us_session = Float64Array::from_iter_values(rows.iter().map(|r| r.is_us_session));
+    let spread_regime = Float64Array::from_iter_values(rows.iter().map(|r| r.spread_regime));
+    let depth_regime = Float64Array::from_iter_values(rows.iter().map(|r| r.depth_regime));
+    let volume_regime = Float64Array::from_iter_values(rows.iter().map(|r| r.volume_regime));
+    let volatility_regime =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.volatility_regime));
+    let speed_regime = Float64Array::from_iter_values(rows.iter().map(|r| r.speed_regime));
 
     let limit_add_bid =
         Float64Array::from_iter_values(rows.iter().map(|r| r.limit_add_bid_volume_rel));
@@ -529,6 +612,14 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         std::sync::Arc::new(avg_buy_dist_to_ask),
         std::sync::Arc::new(avg_sell_dist_to_bid),
         std::sync::Arc::new(rv_log),
+        std::sync::Arc::new(tod_sin),
+        std::sync::Arc::new(tod_cos),
+        std::sync::Arc::new(is_us_session),
+        std::sync::Arc::new(spread_regime),
+        std::sync::Arc::new(depth_regime),
+        std::sync::Arc::new(volume_regime),
+        std::sync::Arc::new(volatility_regime),
+        std::sync::Arc::new(speed_regime),
         std::sync::Arc::new(limit_add_bid),
         std::sync::Arc::new(limit_add_ask),
         std::sync::Arc::new(limit_cancel_bid),
@@ -815,7 +906,7 @@ mod tests {
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let batch = reader.next().expect("batch")?;
         assert_eq!(batch.num_rows(), 1);
-        let expected_columns = 32 + (6 * LEVEL_FEATURE_COUNT);
+        let expected_columns = 40 + (6 * LEVEL_FEATURE_COUNT);
         assert_eq!(batch.num_columns(), expected_columns);
         Ok(())
     }

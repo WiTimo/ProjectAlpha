@@ -4,4 +4,4 @@ Accuracy: 60-70% (auf test 60%, fehlt orderflow + wird noch geringer wegen laten
 
 # Phase 5:
 
-muss jetzt preprocessen nochmal rennen und dann training nochmal schauen wie das dann ausgeht
+quasi genau wie phase 4 aber bisschen besser sind gerade auf einem platoo oben

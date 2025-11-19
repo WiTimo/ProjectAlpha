@@ -193,26 +193,80 @@ pub struct RollingWindowConfig {
 /// Parameters that control the event-based label logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelConfig {
+    #[serde(default = "LabelConfig::default_targets")]
+    pub targets: Vec<TargetSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetSpec {
+    pub name: String,
     pub up_ticks: f64,
     pub down_ticks: f64,
     #[serde(default = "LabelConfig::default_lookahead_events")]
     pub lookahead_events: usize,
 }
 
+impl TargetSpec {
+    pub fn outcome_column(&self) -> String {
+        format!("outcome_{}", self.name)
+    }
+
+    pub fn target_column(&self) -> String {
+        format!("target_{}", self.name)
+    }
+}
+
 impl LabelConfig {
     fn example() -> Self {
         Self {
-            up_ticks: 10.0,
-            down_ticks: 10.0,
-            lookahead_events: Self::default_lookahead_events(),
+            targets: Self::default_targets(),
         }
     }
 
     pub fn validate(&self) -> Result<()> {
-        anyhow::ensure!(self.up_ticks > 0.0, "up_ticks must be > 0");
-        anyhow::ensure!(self.down_ticks > 0.0, "down_ticks must be > 0");
-        anyhow::ensure!(self.lookahead_events > 0, "lookahead_events must be > 0");
+        anyhow::ensure!(
+            !self.targets.is_empty(),
+            "At least one label target must be configured"
+        );
+        for target in &self.targets {
+            anyhow::ensure!(target.up_ticks > 0.0, "up_ticks must be > 0");
+            anyhow::ensure!(target.down_ticks > 0.0, "down_ticks must be > 0");
+            anyhow::ensure!(target.lookahead_events > 0, "lookahead_events must be > 0");
+        }
         Ok(())
+    }
+
+    pub fn target_names(&self) -> Vec<String> {
+        self.targets.iter().map(|t| t.name.clone()).collect()
+    }
+
+    fn default_targets() -> Vec<TargetSpec> {
+        vec![
+            TargetSpec {
+                name: "t20".into(),
+                up_ticks: 20.0,
+                down_ticks: 20.0,
+                lookahead_events: Self::default_lookahead_events(),
+            },
+            TargetSpec {
+                name: "t40".into(),
+                up_ticks: 40.0,
+                down_ticks: 40.0,
+                lookahead_events: Self::default_lookahead_events(),
+            },
+            TargetSpec {
+                name: "t60".into(),
+                up_ticks: 60.0,
+                down_ticks: 60.0,
+                lookahead_events: Self::default_lookahead_events(),
+            },
+            TargetSpec {
+                name: "t100".into(),
+                up_ticks: 100.0,
+                down_ticks: 100.0,
+                lookahead_events: Self::default_lookahead_events(),
+            },
+        ]
     }
 
     const fn default_lookahead_events() -> usize {

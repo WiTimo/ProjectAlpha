@@ -16,6 +16,8 @@
     "training:fast": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolution fast --epochs 32 --val-days 5 --test-days 5",
     "training:mid": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolution mid --epochs 32",
     "training:slow": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolution slow --epochs 32",
+    "training:multi": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolutions fast mid slow --epochs 32 --val-days 5 --test-days 5",
+    "training:multi:regimes": "python training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolutions fast mid slow --enable-regime-training --model-output-dir runs/regimes --epochs 32 --val-days 5 --test-days 5",
     "help": "node -e \"console.log(Object.keys(require('./package.json').scripts).join('\\n'))\""
   },
   "engines": {

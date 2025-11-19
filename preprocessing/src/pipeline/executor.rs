@@ -9,7 +9,7 @@ use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
-use crate::config::PipelineConfig;
+use crate::config::{PipelineConfig, TargetSpec};
 use crate::domain::{Label, LabelOutcome, LabelStats, MarketEvent, Resolution};
 use crate::io::{EventReader, FileEventReader};
 
@@ -140,7 +140,7 @@ impl PreprocessingPipeline {
         );
 
         if !self.config.dry_run {
-            write_labels_parquet(output_path, &labels)?;
+            write_labels_parquet(output_path, &labels, &self.config.labeling.targets)?;
             println!(
                 "Labeling: {} wrote {} labels -> {}",
                 input_file.display(),
@@ -236,31 +236,49 @@ fn log_stage(resolution: Resolution, bar_seconds: u64, aggregate_from: Option<Re
 }
 
 fn log_label_stats(stats: &LabelStats, input_file: &Path) {
-    let denom = stats.total.max(1) as f64;
-    let up_pct = (stats.hit_up as f64 / denom) * 100.0;
-    let down_pct = (stats.hit_down as f64 / denom) * 100.0;
+    if stats.per_target.is_empty() {
+        println!(
+            "Labeling: {} produced no label targets",
+            input_file.display()
+        );
+        return;
+    }
+
     println!(
-        "Labeling: {} labels={} (↑ {:.2}% ↓ {:.2}% no-hit={})",
+        "Labeling: {} targets={}:",
         input_file.display(),
-        stats.total,
-        up_pct,
-        down_pct,
-        stats.no_hit
+        stats.per_target.len()
     );
+    for target_stats in &stats.per_target {
+        let denom = target_stats.total.max(1) as f64;
+        let up_pct = (target_stats.hit_up as f64 / denom) * 100.0;
+        let down_pct = (target_stats.hit_down as f64 / denom) * 100.0;
+        println!(
+            "  - {} -> labels={} (↑ {:.2}% ↓ {:.2}% no-hit={})",
+            target_stats.name, target_stats.total, up_pct, down_pct, target_stats.no_hit
+        );
+    }
 }
 
-fn write_labels_parquet(path: &Path, labels: &[Label]) -> Result<()> {
+fn write_labels_parquet(path: &Path, labels: &[Label], targets: &[TargetSpec]) -> Result<()> {
+    if labels.is_empty() {
+        return Ok(());
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directories for {}", parent.display()))?;
     }
 
-    let schema = Arc::new(Schema::new(vec![
+    let mut fields = vec![
         Field::new("event_index", DataType::Int64, false),
         Field::new("timestamp_ns", DataType::Int64, false),
         Field::new("anchor_price", DataType::Float64, false),
-        Field::new("outcome", DataType::Int8, false),
-    ]));
+    ];
+    for target in targets {
+        fields.push(Field::new(&target.outcome_column(), DataType::Int8, false));
+    }
+    let schema = Arc::new(Schema::new(fields));
 
     let event_index = Int64Array::from_iter_values(labels.iter().map(|l| l.event_index as i64));
     let timestamp_ns = Int64Array::from_iter_values(
@@ -269,17 +287,24 @@ fn write_labels_parquet(path: &Path, labels: &[Label]) -> Result<()> {
             .map(|l| l.timestamp.unix_timestamp_nanos() as i64),
     );
     let anchor_price = Float64Array::from_iter_values(labels.iter().map(|l| l.anchor_price));
-    let outcome = Int8Array::from_iter_values(labels.iter().map(|l| encode_outcome(l.outcome)));
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(event_index) as ArrayRef,
+        Arc::new(timestamp_ns),
+        Arc::new(anchor_price),
+    ];
+    for (idx, _) in targets.iter().enumerate() {
+        let arr = Int8Array::from_iter_values(labels.iter().map(|label| {
+            let outcome = label
+                .outcomes
+                .get(idx)
+                .copied()
+                .unwrap_or(LabelOutcome::NoHit);
+            encode_outcome(outcome)
+        }));
+        columns.push(Arc::new(arr) as ArrayRef);
+    }
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(event_index) as ArrayRef,
-            Arc::new(timestamp_ns),
-            Arc::new(anchor_price),
-            Arc::new(outcome),
-        ],
-    )?;
+    let batch = RecordBatch::try_new(schema.clone(), columns)?;
 
     let file = fs::File::create(path)
         .with_context(|| format!("Failed to create output file {}", path.display()))?;
@@ -430,17 +455,23 @@ mod tests {
         let tmp = tempdir()?;
         let path = tmp.path().join("labels.parquet");
         let ts = time::macros::datetime!(2025-01-01 00:00:00 UTC);
+        let targets = vec![TargetSpec {
+            name: "t20".into(),
+            up_ticks: 20.0,
+            down_ticks: 20.0,
+            lookahead_events: 10,
+        }];
         let labels = vec![
-            Label::new(0, ts, 100.0, LabelOutcome::HitUp),
+            Label::new(0, ts, 100.0, vec![LabelOutcome::HitUp]),
             Label::new(
                 1,
                 ts + time::Duration::seconds(1),
                 101.25,
-                LabelOutcome::HitDown,
+                vec![LabelOutcome::HitDown],
             ),
         ];
 
-        write_labels_parquet(&path, &labels)?;
+        write_labels_parquet(&path, &labels, &targets)?;
         assert!(path.exists());
 
         let file = File::open(&path)?;

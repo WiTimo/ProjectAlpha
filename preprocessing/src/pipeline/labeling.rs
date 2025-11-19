@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use ordered_float::OrderedFloat;
 use time::OffsetDateTime;
 
-use crate::config::{DataSplitConfig, LabelConfig};
+use crate::config::{DataSplitConfig, LabelConfig, TargetSpec};
 use crate::domain::{Label, LabelOutcome, LabelStats, MarketEvent, MarketEventKind};
 
 /// Event-based label calculator that produces hit-up / hit-down outcomes and splits.
@@ -42,89 +42,110 @@ impl LabelingEngine {
             return Vec::new();
         }
 
-        let up_delta = self.params.up_ticks * self.tick_size;
-        let down_delta = self.params.down_ticks * self.tick_size;
-        let lookahead = self.params.lookahead_events.max(1);
-
-        let len = mid_series.len();
-        let mut next_up_hit: Vec<Option<usize>> = vec![None; len];
-        let mut next_down_hit: Vec<Option<usize>> = vec![None; len];
-        let mut expired: Vec<bool> = vec![false; len];
-        let mut expirations: Vec<Vec<usize>> = vec![Vec::new(); len];
-        for anchor_idx in 0..len {
-            let expiry_idx = (anchor_idx + lookahead).min(len - 1);
-            expirations[expiry_idx].push(anchor_idx);
-        }
-        let mut up_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
-        let mut down_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
-
-        for (idx, (_, anchor)) in mid_series.iter().enumerate() {
-            let price = anchor.price;
-
-            while let Some((&OrderedFloat(threshold), _)) = up_waiters.first_key_value() {
-                if threshold > price {
-                    break;
-                }
-                let (_, indices) = up_waiters.pop_first().expect("checked via peek");
-                for anchor_idx in indices {
-                    if expired[anchor_idx] || next_up_hit[anchor_idx].is_some() {
-                        continue;
-                    }
-                    next_up_hit[anchor_idx] = Some(idx);
-                }
-            }
-
-            while let Some((&OrderedFloat(threshold), _)) = down_waiters.last_key_value() {
-                if threshold < price {
-                    break;
-                }
-                let (_, indices) = down_waiters.pop_last().expect("checked via peek");
-                for anchor_idx in indices {
-                    if expired[anchor_idx] || next_down_hit[anchor_idx].is_some() {
-                        continue;
-                    }
-                    next_down_hit[anchor_idx] = Some(idx);
-                }
-            }
-
-            let up_threshold = OrderedFloat(price + up_delta);
-            up_waiters.entry(up_threshold).or_default().push(idx);
-
-            let down_threshold = OrderedFloat(price - down_delta);
-            down_waiters.entry(down_threshold).or_default().push(idx);
-
-            for anchor_idx in expirations[idx].drain(..) {
-                expired[anchor_idx] = true;
-            }
-        }
+        let target_outcomes: Vec<Vec<LabelOutcome>> = self
+            .params
+            .targets
+            .iter()
+            .map(|target| compute_target_outcomes(&mid_series, target, self.tick_size))
+            .collect();
 
         mid_series
             .iter()
             .enumerate()
             .map(|(anchor_idx, (event_index, anchor))| {
-                let up_hit = next_up_hit[anchor_idx];
-                let down_hit = next_down_hit[anchor_idx];
-                let outcome = match (up_hit, down_hit) {
-                    (Some(up_idx), Some(down_idx)) => {
-                        if up_idx <= down_idx {
-                            LabelOutcome::HitUp
-                        } else {
-                            LabelOutcome::HitDown
-                        }
-                    }
-                    (Some(_), None) => LabelOutcome::HitUp,
-                    (None, Some(_)) => LabelOutcome::HitDown,
-                    (None, None) => LabelOutcome::NoHit,
-                };
-
-                Label::new(*event_index, anchor.timestamp, anchor.price, outcome)
+                let mut outcomes = Vec::with_capacity(target_outcomes.len());
+                for per_target in &target_outcomes {
+                    outcomes.push(per_target[anchor_idx]);
+                }
+                Label::new(*event_index, anchor.timestamp, anchor.price, outcomes)
             })
             .collect()
     }
 
     pub fn summarize(&self, labels: &[Label]) -> LabelStats {
-        LabelStats::from_labels(labels)
+        LabelStats::from_labels(labels, &self.params.target_names())
     }
+}
+
+fn compute_target_outcomes(
+    mid_series: &[(usize, LabelAnchor)],
+    target: &TargetSpec,
+    tick_size: f64,
+) -> Vec<LabelOutcome> {
+    let up_delta = target.up_ticks * tick_size;
+    let down_delta = target.down_ticks * tick_size;
+    let lookahead = target.lookahead_events.max(1);
+
+    let len = mid_series.len();
+    let mut next_up_hit: Vec<Option<usize>> = vec![None; len];
+    let mut next_down_hit: Vec<Option<usize>> = vec![None; len];
+    let mut expired: Vec<bool> = vec![false; len];
+    let mut expirations: Vec<Vec<usize>> = vec![Vec::new(); len];
+    for anchor_idx in 0..len {
+        let expiry_idx = (anchor_idx + lookahead).min(len - 1);
+        expirations[expiry_idx].push(anchor_idx);
+    }
+    let mut up_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
+    let mut down_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
+
+    for (idx, (_, anchor)) in mid_series.iter().enumerate() {
+        let price = anchor.price;
+
+        while let Some((&OrderedFloat(threshold), _)) = up_waiters.first_key_value() {
+            if threshold > price {
+                break;
+            }
+            let (_, indices) = up_waiters.pop_first().expect("checked via peek");
+            for anchor_idx in indices {
+                if expired[anchor_idx] || next_up_hit[anchor_idx].is_some() {
+                    continue;
+                }
+                next_up_hit[anchor_idx] = Some(idx);
+            }
+        }
+
+        while let Some((&OrderedFloat(threshold), _)) = down_waiters.last_key_value() {
+            if threshold < price {
+                break;
+            }
+            let (_, indices) = down_waiters.pop_last().expect("checked via peek");
+            for anchor_idx in indices {
+                if expired[anchor_idx] || next_down_hit[anchor_idx].is_some() {
+                    continue;
+                }
+                next_down_hit[anchor_idx] = Some(idx);
+            }
+        }
+
+        let up_threshold = OrderedFloat(price + up_delta);
+        up_waiters.entry(up_threshold).or_default().push(idx);
+
+        let down_threshold = OrderedFloat(price - down_delta);
+        down_waiters.entry(down_threshold).or_default().push(idx);
+
+        for anchor_idx in expirations[idx].drain(..) {
+            expired[anchor_idx] = true;
+        }
+    }
+
+    (0..len)
+        .map(|anchor_idx| {
+            let up_hit = next_up_hit[anchor_idx];
+            let down_hit = next_down_hit[anchor_idx];
+            match (up_hit, down_hit) {
+                (Some(up_idx), Some(down_idx)) => {
+                    if up_idx <= down_idx {
+                        LabelOutcome::HitUp
+                    } else {
+                        LabelOutcome::HitDown
+                    }
+                }
+                (Some(_), None) => LabelOutcome::HitUp,
+                (None, Some(_)) => LabelOutcome::HitDown,
+                (None, None) => LabelOutcome::NoHit,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,9 +230,21 @@ impl SplitSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{DataSplitConfig, TargetSpec};
     use crate::domain::events::{MarketEvent, MarketEventKind, QuoteEvent};
     use crate::domain::order_book::BookLevel;
     use time::macros::datetime;
+
+    fn single_target_config(up: f64, down: f64, lookahead: usize) -> LabelConfig {
+        LabelConfig {
+            targets: vec![TargetSpec {
+                name: "t20".into(),
+                up_ticks: up,
+                down_ticks: down,
+                lookahead_events: lookahead,
+            }],
+        }
+    }
 
     fn quote_event(ts: time::OffsetDateTime, mid: f64) -> MarketEvent {
         MarketEvent {
@@ -236,11 +269,7 @@ mod tests {
 
     #[test]
     fn labeler_detects_up_and_down_hits() {
-        let params = LabelConfig {
-            up_ticks: 2.0,
-            down_ticks: 2.0,
-            lookahead_events: 10,
-        };
+        let params = single_target_config(2.0, 2.0, 10);
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
             quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
@@ -251,17 +280,13 @@ mod tests {
 
         let labels = engine.compute_labels(&events);
         assert_eq!(labels.len(), events.len());
-        assert_eq!(labels[0].outcome, LabelOutcome::HitUp);
-        assert_eq!(labels[1].outcome, LabelOutcome::HitDown);
+        assert_eq!(labels[0].outcomes[0], LabelOutcome::HitUp);
+        assert_eq!(labels[1].outcomes[0], LabelOutcome::HitDown);
     }
 
     #[test]
     fn labeler_marks_no_hit_when_threshold_missing() {
-        let params = LabelConfig {
-            up_ticks: 10.0,
-            down_ticks: 10.0,
-            lookahead_events: 5,
-        };
+        let params = single_target_config(10.0, 10.0, 5);
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
             quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
@@ -273,17 +298,13 @@ mod tests {
         assert!(
             labels
                 .iter()
-                .all(|label| label.outcome == LabelOutcome::NoHit)
+                .all(|label| label.outcomes[0] == LabelOutcome::NoHit)
         );
     }
 
     #[test]
     fn labeler_outputs_finite_values() {
-        let params = LabelConfig {
-            up_ticks: 1.0,
-            down_ticks: 1.0,
-            lookahead_events: 5,
-        };
+        let params = single_target_config(1.0, 1.0, 5);
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
             quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
@@ -304,11 +325,7 @@ mod tests {
 
     #[test]
     fn labeler_enforces_lookahead_window() {
-        let params = LabelConfig {
-            up_ticks: 1.0,
-            down_ticks: 1.0,
-            lookahead_events: 1,
-        };
+        let params = single_target_config(1.0, 1.0, 1);
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
             quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
@@ -318,7 +335,7 @@ mod tests {
 
         let labels = engine.compute_labels(&events);
         assert_eq!(labels.len(), events.len());
-        assert!(matches!(labels[0].outcome, LabelOutcome::NoHit));
+        assert!(matches!(labels[0].outcomes[0], LabelOutcome::NoHit));
     }
 
     #[test]
@@ -334,7 +351,7 @@ mod tests {
                 0,
                 datetime!(2025-01-01 00:00:00 UTC),
                 0.0,
-                LabelOutcome::NoHit
+                vec![LabelOutcome::NoHit]
             );
             8
         ];

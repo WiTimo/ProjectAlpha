@@ -1,13 +1,16 @@
 === BASIC DATASET INFO ===
 Rows:    805,515
-Columns: 4
+Columns: 7
 
 === COLUMN OVERVIEW ===
 Name                           Dtype                  Nulls    Null%       Unique
 event_index                    int64                      0    0.00%      805,515
 timestamp_ns                   int64                      0    0.00%      170,829
 anchor_price                   float64                    0    0.00%        1,010
-outcome                        int8                       0    0.00%            3
+outcome_t20                    int8                       0    0.00%            3
+outcome_t40                    int8                       0    0.00%            3
+outcome_t60                    int8                       0    0.00%            3
+outcome_t100                   int8                       0    0.00%            1
 
 === DETAILED COLUMN STATS ===
 
@@ -65,32 +68,96 @@ Unique non-null values: 1,010
    99 :          17,253.4
    max:          17,258.6
 
---- Column: outcome ---
+--- Column: outcome_t20 ---
 Dtype: int8
 Total rows: 805,515
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    -1: 349,187 (43.35%)
-    1: 228,396 (28.35%)
-    0: 227,932 (28.30%)
+    -1: 721,784 (89.61%)
+    0: 44,726 (5.55%)
+    1: 39,005 (4.84%)
   Non-null count: 805,515.0
-  Mean:          -0.149955
-  Std dev:       0.833397
+  Mean:          -0.84763
+  Std dev:       0.475393
    min:          -1
    1  :          -1
    5  :          -1
    25 :          -1
-   50 :          0
-   75 :          1
-   95 :          1
+   50 :          -1
+   75 :          -1
+   95 :          0
    99 :          1
    max:          1
 
+--- Column: outcome_t40 ---
+Dtype: int8
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 3
+  Value distribution (including NaN):
+    -1: 802,959 (99.68%)
+    0: 1,661 (0.21%)
+    1: 895 (0.11%)
+  Non-null count: 805,515.0
+  Mean:          -0.995716
+  Std dev:       0.0805484
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -1
+   50 :          -1
+   75 :          -1
+   95 :          -1
+   99 :          -1
+   max:          1
+
+--- Column: outcome_t60 ---
+Dtype: int8
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 3
+  Value distribution (including NaN):
+    -1: 805,046 (99.94%)
+    1: 403 (0.05%)
+    0: 66 (0.01%)
+  Non-null count: 805,515.0
+  Mean:          -0.998917
+  Std dev:       0.0456286
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -1
+   50 :          -1
+   75 :          -1
+   95 :          -1
+   99 :          -1
+   max:          1
+
+--- Column: outcome_t100 ---
+Dtype: int8
+Total rows: 805,515
+Nulls: 0 (0.00%)
+Unique non-null values: 1
+  Value distribution (including NaN):
+    -1: 805,515 (100.00%)
+  Non-null count: 805,515.0
+  Mean:          -1
+  Std dev:       0
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -1
+   50 :          -1
+   75 :          -1
+   95 :          -1
+   99 :          -1
+   max:          -1
+
 === SAMPLE ROWS ===
-   event_index         timestamp_ns  anchor_price  outcome
-0            6  1702965600108000000     17140.875       -1
-1            8  1702965600108000000     17140.875       -1
-2           10  1702965600108000000     17140.875       -1
-3           12  1702965600108000000     17140.875       -1
-4           14  1702965600108000000     17140.875       -1
+   event_index         timestamp_ns  anchor_price  outcome_t20  outcome_t40  outcome_t60  outcome_t100
+0            6  1702965600108000000     17140.875           -1           -1           -1            -1
+1            8  1702965600108000000     17140.875           -1           -1           -1            -1
+2           10  1702965600108000000     17140.875           -1           -1           -1            -1
+3           12  1702965600108000000     17140.875           -1           -1           -1            -1
+4           14  1702965600108000000     17140.875           -1           -1           -1            -1
