@@ -1171,7 +1171,9 @@ def standardize_splits(
     winsorize_features(train, val, test, WINSOR_COLUMNS, WINSOR_LOWER, WINSOR_UPPER)
 
     cols = splits.feature_cols
-    stds = train[cols].std().fillna(0.0)
+    stds = pd.Series({col: float(train[col].std()) for col in cols}, index=cols).fillna(
+        0.0
+    )
     keep_cols = stds[stds > MIN_STD].index.tolist()
     dropped = [c for c in cols if c not in keep_cols]
     if dropped:
@@ -1184,8 +1186,8 @@ def standardize_splits(
 
     cols = keep_cols
     splits.feature_cols = cols
-    means = train[cols].mean()
-    stds = train[cols].std().replace(0.0, 1.0)
+    means = pd.Series({col: float(train[col].mean()) for col in cols})
+    stds = pd.Series({col: float(train[col].std()) for col in cols}).replace(0.0, 1.0)
     logging.info("Train means:\n%s", means)
     logging.info("Train stds:\n%s", stds)
 
@@ -1528,6 +1530,24 @@ def run_logistic_baseline(
         logging.warning("Logistic regression baseline failed: %s", exc)
         return None
 
+    warmup = 0
+    if trade_params:
+        warmup = max(int(trade_params.get("seq_len", 1)) - 1, 0)
+
+    def apply_warmup(
+        probs: np.ndarray, targets: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        if warmup <= 0:
+            return probs, targets
+        if len(probs) <= warmup:
+            logging.warning(
+                "Warmup (%d) exceeds available predictions (%d); skipping split",
+                warmup,
+                len(probs),
+            )
+            return np.asarray([]), np.asarray([])
+        return probs[warmup:], targets[warmup:]
+
     classification_metrics: Dict[str, Dict[str, float]] = {}
     probabilities_by_split: Dict[str, np.ndarray] = {}
     for name, features, targets in (
@@ -1537,11 +1557,19 @@ def run_logistic_baseline(
     ):
         probs = clf.predict_proba(features)[:, 1]
         probs = probs.astype(np.float32, copy=False)
-        probabilities_by_split[name] = probs
-        preds = (probs >= 0.5).astype(int)
-        acc = accuracy_score(preds, targets.astype(int))
+        trimmed_probs, trimmed_targets = apply_warmup(probs, targets.astype(int))
+        probabilities_by_split[name] = trimmed_probs
+        if len(trimmed_probs) == 0:
+            classification_metrics[name] = {"acc": float("nan"), "auc": float("nan")}
+            logging.warning(
+                "Skipping classification metrics for %s split – no rows after warmup",
+                name,
+            )
+            continue
+        preds = (trimmed_probs >= 0.5).astype(int)
+        acc = accuracy_score(preds, trimmed_targets.astype(int))
         try:
-            auc = roc_auc_score(targets, probs)
+            auc = roc_auc_score(trimmed_targets, trimmed_probs)
         except ValueError:
             auc = float("nan")
         classification_metrics[name] = {"acc": float(acc), "auc": float(auc)}
