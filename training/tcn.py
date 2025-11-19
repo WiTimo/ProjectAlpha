@@ -24,6 +24,7 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -56,7 +57,6 @@ CORE_FEATURE_COLUMNS = [
     "rv_log",
 ]
 
-# Group D – simple order flow
 GROUP_D_COLUMNS = [
     "limit_add_bid_volume_rel",
     "limit_add_ask_volume_rel",
@@ -81,7 +81,6 @@ AGGRESSOR_COLUMNS = [
     "has_sell_trade",
 ]
 
-# Optional presence flags – level 1 is always 1.0, so we only use 2/3.
 PRESENCE_COLUMNS = [
     "bid_level_2_present",
     "bid_level_3_present",
@@ -108,11 +107,6 @@ PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]
 
 SUPPORTED_RESOLUTIONS = ("fast", "mid", "slow")
 
-# Label mapping: 1 -> positive, 0/-1 -> negative
-LABEL_MAP = {1: 1.0, 0: 0.0, -1: 0.0}
-
-MIN_STD = 1e-9
-
 # Columns we winsorize using train quantiles
 WINSOR_COLUMNS = [
     "spread_ticks",
@@ -136,6 +130,17 @@ WINSOR_COLUMNS = [
 WINSOR_LOWER = 0.001
 WINSOR_UPPER = 0.999
 
+TARGET_CLASS_VALUES = np.array([-1, 0, 1], dtype=np.int8)
+TARGET_VALUE_TO_INDEX = {
+    int(value): idx for idx, value in enumerate(TARGET_CLASS_VALUES)
+}
+NUM_TARGET_CLASSES = int(TARGET_CLASS_VALUES.size)
+DOWN_CLASS_INDEX = TARGET_VALUE_TO_INDEX[-1]
+FLAT_CLASS_INDEX = TARGET_VALUE_TO_INDEX[0]
+UP_CLASS_INDEX = TARGET_VALUE_TO_INDEX[1]
+
+MIN_STD = 1e-6
+
 
 def resolve_target_column_name(value: str) -> str:
     cleaned = value.strip().lower()
@@ -151,13 +156,22 @@ def resolve_target_column_name(value: str) -> str:
 
 
 @dataclass
+class TargetConfig:
+    column: str
+    weight: float = 1.0
+    class_weights: torch.Tensor = field(
+        default_factory=lambda: torch.ones(NUM_TARGET_CLASSES, dtype=torch.float32)
+    )
+
+
+@dataclass
 class DatasetSplits:
     train: pd.DataFrame
     val: pd.DataFrame
     test: pd.DataFrame
     feature_cols: List[str]
+    target_columns: List[str]
     stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    target_column: str = "target_t40"
 
 
 @dataclass
@@ -178,7 +192,7 @@ class SequenceDataset(Dataset):
         if len(data) < seq_len:
             raise ValueError("Not enough samples for the requested sequence length")
         self.data = torch.from_numpy(data).float()
-        self.targets = torch.from_numpy(targets).float()
+        self.targets = torch.from_numpy(targets).long()
         self.seq_len = seq_len
 
     def __len__(self) -> int:
@@ -262,6 +276,7 @@ class DilatedTCN(nn.Module):
         kernel: int = 5,
         dilation_base: int = 2,
         dropout: float = 0.1,
+        output_dim: int = 1,
     ):
         super().__init__()
         if layers < 1:
@@ -291,7 +306,7 @@ class DilatedTCN(nn.Module):
         self.head = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
-            nn.Linear(hidden, 1),
+            nn.Linear(hidden, output_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -504,6 +519,25 @@ def parse_args() -> argparse.Namespace:
         help="Train an additional Phase 4 baseline (ignoring OFI/aggressor features) for comparison",
     )
     parser.add_argument(
+        "--targets",
+        type=str,
+        nargs="+",
+        default=["t20", "t40", "t60", "t100"],
+        help="Target horizons to train (subset of outcome_* columns without prefix)",
+    )
+    parser.add_argument(
+        "--target-loss-weights",
+        type=float,
+        nargs="+",
+        help="Optional per-target loss weights matching --targets order",
+    )
+    parser.add_argument(
+        "--class-weight-power",
+        type=float,
+        default=0.5,
+        help="Exponent applied to inverse frequency class weights (0 disables weighting)",
+    )
+    parser.add_argument(
         "--enable-regime-training",
         action="store_true",
         help="Train separate models per volatility regime and route during inference",
@@ -533,6 +567,47 @@ def parse_args() -> argparse.Namespace:
         help="Directory to store trained regime model bundles",
     )
     return parser.parse_args()
+
+
+def resolve_requested_targets(
+    requested: List[str],
+    primary: str,
+    available: List[str],
+) -> List[str]:
+    resolved: List[str] = []
+    available_set = set(available)
+    for name in requested:
+        column = resolve_target_column_name(name)
+        if column not in available_set:
+            logging.warning("Skipping target %s – not found in dataset", column)
+            continue
+        if column not in resolved:
+            resolved.append(column)
+    primary_column = resolve_target_column_name(primary)
+    if primary_column not in available_set:
+        raise ValueError(
+            f"Primary target '{primary_column}' missing from available columns: {available}"
+        )
+    if primary_column in resolved:
+        resolved.remove(primary_column)
+    resolved.insert(0, primary_column)
+    if not resolved:
+        raise RuntimeError("No valid targets were resolved for training")
+    return resolved
+
+
+def resolve_resolution_plan(args: argparse.Namespace) -> List[str]:
+    raw_plan = args.resolutions or [args.resolution]
+    plan: List[str] = []
+    for entry in raw_plan:
+        normalized = entry.lower()
+        if normalized not in SUPPORTED_RESOLUTIONS:
+            raise ValueError(
+                f"Unsupported resolution '{entry}'; choose from {SUPPORTED_RESOLUTIONS}"
+            )
+        if normalized not in plan:
+            plan.append(normalized)
+    return plan
 
 
 def discover_feature_files(
@@ -589,10 +664,19 @@ def load_labels(label_root: Path, stems: Iterable[str]) -> Dict[str, LabelTable]
 # -------------------------------------------------------
 
 
+def _aggregate_bar_label(values: pd.Series) -> float:
+    vals = values.to_numpy()
+    if np.any(vals == 1):
+        return 1.0
+    if np.any(vals == -1):
+        return -1.0
+    return 0.0
+
+
 def assign_labels_to_bars(
     features: pd.DataFrame, labels: pd.DataFrame, outcome_cols: List[str]
 ) -> pd.DataFrame:
-    """Assign binary labels per target column to each bar."""
+    """Assign multi-class {-1,0,1} labels per target column to each bar."""
 
     starts = features["start_timestamp_ns"].to_numpy()
     ends = features["end_timestamp_ns"].to_numpy()
@@ -614,10 +698,10 @@ def assign_labels_to_bars(
         alias = col.replace("outcome_", "target_", 1)
         bar_labels = np.full(len(features), np.nan, dtype=float)
         if valid.any():
-            target_values = labels[col].map(LABEL_MAP).to_numpy()
-            valid_vals = target_values[valid].astype(float, copy=False)
+            target_values = labels[col].astype(float, copy=False).to_numpy()
+            valid_vals = target_values[valid]
             tmp = pd.DataFrame({"bar_idx": valid_bar_idx, "val": valid_vals})
-            agg = tmp.groupby("bar_idx", sort=False)["val"].max()
+            agg = tmp.groupby("bar_idx", sort=False)["val"].apply(_aggregate_bar_label)
             bar_labels[agg.index.to_numpy()] = agg.to_numpy(dtype=float)
         result[alias] = bar_labels
 
@@ -665,158 +749,223 @@ def combine_feature_label_frames(
 
 
 # -------------------------------------------------------
+# Target encoding + metadata
+# -------------------------------------------------------
+
+
+def ensure_feature_columns(df: pd.DataFrame, required_columns: Iterable[str]) -> None:
+    missing = [col for col in required_columns if col not in df.columns]
+    if missing:
+        raise KeyError(
+            "Missing required feature column(s): %s" % ", ".join(sorted(missing))
+        )
+
+
+def encode_target_matrix(df: pd.DataFrame, target_columns: List[str]) -> np.ndarray:
+    rows = len(df)
+    if not target_columns:
+        return np.zeros((rows, 0), dtype=np.int64)
+    matrix = np.zeros((rows, len(target_columns)), dtype=np.int64)
+    for idx, column in enumerate(target_columns):
+        if column not in df.columns:
+            raise KeyError(f"Target column '{column}' missing from dataframe")
+        values = df[column].to_numpy(dtype=float, copy=False)
+        if np.isnan(values).any():
+            raise ValueError(f"Target column '{column}' contains NaNs after filtering")
+        ints = values.astype(int)
+        mask = np.isin(ints, TARGET_CLASS_VALUES)
+        if not mask.all():
+            invalid = ", ".join(str(v) for v in np.unique(ints[~mask]))
+            raise ValueError(
+                f"Unexpected label value(s) in {column}: {invalid} (expected -1, 0, 1)"
+            )
+        encoded = np.empty(len(ints), dtype=np.int64)
+        for class_value, class_idx in TARGET_VALUE_TO_INDEX.items():
+            encoded[ints == class_value] = class_idx
+        matrix[:, idx] = encoded
+    return matrix
+
+
+def primary_positive_mask(target_matrix: np.ndarray) -> np.ndarray:
+    if target_matrix.ndim != 2:
+        raise ValueError("Target matrix must be 2D")
+    if target_matrix.shape[1] == 0:
+        return np.zeros(target_matrix.shape[0], dtype=np.int64)
+    return (target_matrix[:, 0] == UP_CLASS_INDEX).astype(np.int64)
+
+
+def encode_class_weights(counts: np.ndarray, power: float) -> torch.Tensor:
+    counts = np.asarray(counts, dtype=np.float64)
+    if power <= 0.0 or counts.sum() <= 0.0:
+        return torch.ones(NUM_TARGET_CLASSES, dtype=torch.float32)
+    probs = counts / counts.sum()
+    probs = np.clip(probs, 1e-8, None)
+    weights = (1.0 / probs) ** power
+    weights = weights / np.mean(weights)
+    return torch.from_numpy(weights.astype(np.float32))
+
+
+def compute_target_metadata(
+    df: pd.DataFrame,
+    target_columns: List[str],
+    target_loss_weights: Optional[Iterable[float]],
+    class_weight_power: float,
+) -> List[TargetConfig]:
+    if not target_columns:
+        raise ValueError("At least one target column is required")
+    if target_loss_weights is None:
+        weights = [1.0 for _ in target_columns]
+    else:
+        weights = list(target_loss_weights)
+        if len(weights) != len(target_columns):
+            raise ValueError(
+                "--target-loss-weights must match number of target columns"
+            )
+    configs: List[TargetConfig] = []
+    for idx, column in enumerate(target_columns):
+        series = df[column].astype(int, copy=False)
+        class_counts = np.array(
+            [(series == value).sum() for value in TARGET_CLASS_VALUES],
+            dtype=np.float64,
+        )
+        class_weights = encode_class_weights(class_counts, class_weight_power)
+        logging.info(
+            "Target %s distribution -> down=%d flat=%d up=%d weight=%.3f",
+            column,
+            int(class_counts[DOWN_CLASS_INDEX]),
+            int(class_counts[FLAT_CLASS_INDEX]),
+            int(class_counts[UP_CLASS_INDEX]),
+            float(weights[idx]),
+        )
+        configs.append(
+            TargetConfig(
+                column=column, weight=float(weights[idx]), class_weights=class_weights
+            )
+        )
+    return configs
+
+
+def refresh_target_configs(
+    configs: List[TargetConfig], train_df: pd.DataFrame, class_weight_power: float
+) -> List[TargetConfig]:
+    refreshed: List[TargetConfig] = []
+    for cfg in configs:
+        if cfg.column not in train_df.columns:
+            raise KeyError(f"Target column '{cfg.column}' missing from training split")
+        series = train_df[cfg.column].astype(int, copy=False)
+        class_counts = np.array(
+            [(series == value).sum() for value in TARGET_CLASS_VALUES],
+            dtype=np.float64,
+        )
+        class_weights = encode_class_weights(class_counts, class_weight_power)
+        refreshed.append(
+            TargetConfig(
+                column=cfg.column, weight=cfg.weight, class_weights=class_weights
+            )
+        )
+        logging.info(
+            "Refreshed class weights for %s -> counts=%s weights=%s",
+            cfg.column,
+            ", ".join(str(int(c)) for c in class_counts.tolist()),
+            ", ".join(f"{w:.3f}" for w in class_weights.tolist()),
+        )
+    return refreshed
+
+
+# -------------------------------------------------------
 # QA + standardisation
 # -------------------------------------------------------
 
 
 def data_quality_checks(df: pd.DataFrame, feature_cols: List[str]) -> None:
     logging.info("Running data quality checks on %d rows", len(df))
-    nan_counts = df[feature_cols].isna().sum()
-    if nan_counts.any():
-        logging.warning("NaNs detected:\n%s", nan_counts[nan_counts > 0])
-    else:
-        logging.info("No NaNs detected in feature columns")
+    ensure_feature_columns(df, feature_cols)
+    feature_df = df[feature_cols]
 
-    finite_mask = np.isfinite(df[feature_cols].to_numpy())
-    if not finite_mask.all():
-        logging.warning("Infinities detected in feature matrix")
-    else:
-        logging.info("All feature values are finite")
-
-    desc = df[feature_cols].describe(percentiles=[0.5, 0.95]).transpose()
-    logging.info(
-        "Feature ranges (min / median / 95th / max):\n%s",
-        desc[["min", "50%", "95%", "max"]],
-    )
-
-
-def ensure_feature_columns(df: pd.DataFrame, feature_cols: List[str]) -> None:
-    missing = [col for col in feature_cols if col not in df.columns]
-    if missing:
-        raise KeyError(
-            "Missing expected feature columns: " + ", ".join(sorted(missing))
+    nan_counts = feature_df.isna().sum()
+    nan_counts = nan_counts[nan_counts > 0]
+    if not nan_counts.empty:
+        preview = ", ".join(
+            f"{col}={int(count)}"
+            for col, count in nan_counts.sort_values(ascending=False).items()
         )
+        raise ValueError(f"Feature columns contain NaNs: {preview}")
 
+    values = feature_df.to_numpy(dtype=float, copy=False)
+    if not np.isfinite(values).all():
+        raise ValueError("Feature columns contain non-finite values (inf/nan)")
 
-def resolve_resolution_plan(args: argparse.Namespace) -> List[str]:
-    raw_plan = args.resolutions or [args.resolution]
-    plan: List[str] = []
-    for entry in raw_plan:
-        normalized = entry.lower()
-        if normalized not in SUPPORTED_RESOLUTIONS:
-            raise ValueError(
-                f"Unsupported resolution '{entry}'; choose from {SUPPORTED_RESOLUTIONS}"
-            )
-        if normalized not in plan:
-            plan.append(normalized)
-    return plan
-
-
-def load_resolution_feature_table(
-    feature_root: Path, resolution: str, limit_files: int
-) -> pd.DataFrame:
-    feature_files = discover_feature_files(feature_root, resolution, limit_files)
-    frames = load_feature_frames(feature_files)
-    if not frames:
-        raise RuntimeError(
-            f"No feature frames were loaded for resolution '{resolution}'"
-        )
-    df = pd.concat(frames, ignore_index=True)
-    if df.empty:
-        raise RuntimeError(f"Resolution '{resolution}' produced an empty feature table")
-    df.sort_values(["source_file", "start_timestamp_ns"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    return df
+    key_cols = ["source_file", "start_timestamp_ns"]
+    if all(col in df.columns for col in key_cols):
+        dupes = int(df.duplicated(subset=key_cols).sum())
+        if dupes:
+            logging.warning("Detected %d duplicate bar(s) based on %s", dupes, key_cols)
 
 
 def augment_with_multi_resolution_inputs(
-    dataset: pd.DataFrame,
+    base_df: pd.DataFrame,
     feature_root: Path,
-    resolutions: List[str],
+    extra_resolutions: Iterable[str],
     limit_files: int,
-    feature_cols: List[str],
+    base_feature_cols: List[str],
 ) -> Tuple[pd.DataFrame, Dict[str, List[str]], List[str]]:
-    if not resolutions:
-        return dataset, {}, []
+    if not extra_resolutions:
+        return base_df, {}, []
 
-    if "source_file" not in dataset.columns:
-        raise KeyError("source_file column required for multi-resolution joins")
-
-    augmented = dataset.copy()
-    augmented.sort_values(["source_file", "start_timestamp_ns"], inplace=True)
-    augmented.reset_index(drop=True, inplace=True)
-    available_sources = set(augmented["source_file"].unique())
+    augmented = base_df.copy()
+    column_map: Dict[str, List[str]] = {}
     multi_cols: List[str] = []
-    column_map: Dict[str, List[str]] = {col: [] for col in feature_cols}
+    key_cols = ["source_file", "start_timestamp_ns"]
+    if not all(col in augmented.columns for col in key_cols):
+        raise KeyError(
+            f"Dataset missing required key columns {key_cols} for multi-resolution merge"
+        )
+    stems = set(augmented["source_file"].unique())
 
-    for resolution in resolutions:
-        other_df = load_resolution_feature_table(feature_root, resolution, limit_files)
-        other_df = other_df[other_df["source_file"].isin(available_sources)].copy()
-        if other_df.empty:
-            raise RuntimeError(
-                f"Resolution '{resolution}' has no overlapping source files with the base dataset"
+    for resolution in extra_resolutions:
+        try:
+            feature_files = discover_feature_files(
+                feature_root, resolution, limit_files
             )
-
-        ensure_feature_columns(other_df, feature_cols)
-        for meta_col in ("start_timestamp_ns", "end_timestamp_ns"):
-            if meta_col not in other_df.columns:
-                raise KeyError(
-                    f"Resolution '{resolution}' missing required column {meta_col}"
-                )
-
-        prefix = resolution
-        rename_map = {col: f"{prefix}__{col}" for col in feature_cols}
-        subset = other_df[
-            ["source_file", "start_timestamp_ns", "end_timestamp_ns", *feature_cols]
-        ].rename(
-            columns={
-                "start_timestamp_ns": f"{prefix}__start_timestamp_ns",
-                "end_timestamp_ns": f"{prefix}__end_timestamp_ns",
-                **rename_map,
-            }
-        )
-
-        start_col = f"{prefix}__start_timestamp_ns"
-        end_col = f"{prefix}__end_timestamp_ns"
-        subset.sort_values(["source_file", start_col], inplace=True)
-        merged = pd.merge_asof(
-            augmented,
-            subset,
-            left_on="start_timestamp_ns",
-            right_on=start_col,
-            by="source_file",
-            direction="backward",
-        )
-
-        coverage_mask = (
-            merged[end_col].notna()
-            & (merged["start_timestamp_ns"] >= merged[start_col])
-            & (merged["start_timestamp_ns"] < merged[end_col])
-        )
-        missing_rows = int((~coverage_mask).sum())
-        prefixed_cols = list(rename_map.values())
-        for base_col, pref_col in rename_map.items():
-            column_map.setdefault(base_col, []).append(pref_col)
-        if missing_rows:
+        except FileNotFoundError:
             logging.warning(
-                "[%s] Multi-resolution coverage missing for %d rows; leaving NaNs",
+                "Skipping resolution %s – no Parquet files found", resolution
+            )
+            continue
+        frames = load_feature_frames(feature_files)
+        if not frames:
+            logging.warning(
+                "Skipping resolution %s – unable to load feature frames", resolution
+            )
+            continue
+        merged = pd.concat(frames, ignore_index=True)
+        merged = merged[merged["source_file"].isin(stems)].copy()
+        if merged.empty:
+            logging.warning(
+                "Resolution %s has no overlapping source files with the base dataset",
                 resolution,
-                missing_rows,
             )
-            merged.loc[~coverage_mask, prefixed_cols] = np.nan
-        else:
-            logging.info(
-                "[%s] Multi-resolution coverage aligned for all rows", resolution
+            continue
+        keep_cols = [col for col in base_feature_cols if col in merged.columns]
+        if not keep_cols:
+            logging.warning(
+                "Resolution %s lacks the requested feature columns; skipping",
+                resolution,
             )
-
-        merged.drop(columns=[start_col, end_col], inplace=True)
-        augmented = merged
-        multi_cols.extend(prefixed_cols)
+            continue
+        renamed = {col: f"{col}@{resolution}" for col in keep_cols}
+        subset = merged[key_cols + keep_cols].copy()
+        subset.sort_values(key_cols, inplace=True)
+        subset.rename(columns=renamed, inplace=True)
+        augmented = augmented.merge(subset, on=key_cols, how="left")
+        for base_col, alias in renamed.items():
+            column_map.setdefault(base_col, []).append(alias)
+            multi_cols.append(alias)
 
     if multi_cols:
-        augmented.sort_values(["source_file", "start_timestamp_ns"], inplace=True)
-        for col in multi_cols:
-            augmented[col] = augmented.groupby("source_file")[col].ffill()
+        augmented.sort_values(key_cols, inplace=True)
+        augmented.reset_index(drop=True, inplace=True)
+        augmented[multi_cols] = augmented.groupby("source_file")[multi_cols].ffill()
         na_mask = augmented[multi_cols].isna().any(axis=1)
         if na_mask.any():
             count = int(na_mask.sum())
@@ -824,7 +973,6 @@ def augment_with_multi_resolution_inputs(
                 "Dropping %d row(s) lacking complete multi-resolution features", count
             )
             augmented = augmented.loc[~na_mask].copy()
-        augmented.reset_index(drop=True, inplace=True)
 
     return augmented, column_map, multi_cols
 
@@ -890,9 +1038,10 @@ def compute_split_stats(df: pd.DataFrame, target_column: str) -> Dict[str, Any]:
             "hourly": pd.DataFrame(columns=["hour", "rows", "win_rate"]),
         }
 
+    target_series = df[target_column]
     stats = {
         "rows": int(len(df)),
-        "hit_rate": df[target_column].mean(),
+        "hit_rate": (target_series == 1).mean(),
         "mean_spread": df.get("spread_ticks", pd.Series(dtype=float)).mean(),
         "mean_depth": (
             df.get("cum_bid_size_l_rel", pd.Series(dtype=float))
@@ -904,7 +1053,9 @@ def compute_split_stats(df: pd.DataFrame, target_column: str) -> Dict[str, Any]:
 
     if "start_timestamp_ns" in df.columns:
         hours = pd.to_datetime(df["start_timestamp_ns"], unit="ns", utc=True).dt.hour
-        hourly_df = pd.DataFrame({"hour": hours, "target": df[target_column]})
+        hourly_df = pd.DataFrame(
+            {"hour": hours, "target": (target_series == 1).astype(float)}
+        )
         grouped = hourly_df.groupby("hour", dropna=False).agg(
             rows=("target", "size"), win_rate=("target", "mean")
         )
@@ -966,14 +1117,17 @@ def standardize_splits(
     for split in (train, val, test):
         split.loc[:, cols] = (split[cols] - means) / stds
 
-    target_col = splits.target_column
+    target_cols = splits.target_columns
+    train_targets = encode_target_matrix(train, target_cols)
+    val_targets = encode_target_matrix(val, target_cols)
+    test_targets = encode_target_matrix(test, target_cols)
     return (
         train[cols].to_numpy(),
         val[cols].to_numpy(),
         test[cols].to_numpy(),
-        train[target_col].to_numpy(),
-        val[target_col].to_numpy(),
-        test[target_col].to_numpy(),
+        train_targets,
+        val_targets,
+        test_targets,
         cols,
         means,
         stds,
@@ -1042,7 +1196,7 @@ def build_splits(
     val_days: int,
     test_days: int,
     feature_cols: List[str],
-    target_column: str,
+    target_columns: List[str],
     external_test: Optional[pd.DataFrame] = None,
 ) -> DatasetSplits:
     if split_mode == "rows":
@@ -1054,17 +1208,20 @@ def build_splits(
         test = external_test.copy()
         test.sort_values("start_timestamp_ns", inplace=True)
         test.reset_index(drop=True, inplace=True)
+    if not target_columns:
+        raise ValueError("At least one target column is required for training")
+    reference_target = target_columns[0]
     splits = DatasetSplits(
         train=train.reset_index(drop=True),
         val=val.reset_index(drop=True),
         test=test.reset_index(drop=True),
         feature_cols=feature_cols,
-        target_column=target_column,
+        target_columns=target_columns,
     )
     splits.stats = {
-        "train": summarize_split("train", splits.train, target_column),
-        "val": summarize_split("val", splits.val, target_column),
-        "test": summarize_split("test", splits.test, target_column),
+        "train": compute_split_stats(splits.train, reference_target),
+        "val": compute_split_stats(splits.val, reference_target),
+        "test": compute_split_stats(splits.test, reference_target),
     }
     return splits
 
@@ -1078,15 +1235,15 @@ def build_dataloaders(
     train_x: np.ndarray,
     val_x: np.ndarray,
     test_x: np.ndarray,
-    train_y: np.ndarray,
-    val_y: np.ndarray,
-    test_y: np.ndarray,
+    train_targets: np.ndarray,
+    val_targets: np.ndarray,
+    test_targets: np.ndarray,
     seq_len: int,
     batch_size: int,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    train_ds = SequenceDataset(train_x, train_y, seq_len)
-    val_ds = SequenceDataset(val_x, val_y, seq_len)
-    test_ds = SequenceDataset(test_x, test_y, seq_len)
+    train_ds = SequenceDataset(train_x, train_targets, seq_len)
+    val_ds = SequenceDataset(val_x, val_targets, seq_len)
+    test_ds = SequenceDataset(test_x, test_targets, seq_len)
     return (
         DataLoader(train_ds, batch_size=batch_size, shuffle=True),
         DataLoader(val_ds, batch_size=batch_size, shuffle=False),
@@ -1098,11 +1255,17 @@ def run_logistic_baseline(
     train_x: np.ndarray,
     val_x: np.ndarray,
     test_x: np.ndarray,
-    train_y: np.ndarray,
-    val_y: np.ndarray,
-    test_y: np.ndarray,
+    train_targets: np.ndarray,
+    val_targets: np.ndarray,
+    test_targets: np.ndarray,
 ) -> None:
     logging.info("Running logistic-regression baseline for reference")
+    if train_targets.shape[1] == 0:
+        logging.warning("Baseline skipped – no target columns available")
+        return
+    train_y = primary_positive_mask(train_targets).astype(int)
+    val_y = primary_positive_mask(val_targets).astype(int)
+    test_y = primary_positive_mask(test_targets).astype(int)
     try:
         clf = LogisticRegression(
             max_iter=2000,
@@ -1138,45 +1301,77 @@ def run_logistic_baseline(
 # -------------------------------------------------------
 
 
-def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device
-) -> Tuple[float, float]:
-    model.eval()
-    preds: List[float] = []
-    targets: List[float] = []
-    with torch.no_grad():
-        for batch_x, batch_y in loader:
-            logits = model(batch_x.to(device))
-            probs = torch.sigmoid(logits).cpu().numpy().ravel()
-            preds.extend(probs)
-            targets.extend(batch_y.cpu().numpy().ravel())
-    if not preds:
-        return float("nan"), float("nan")
-    preds_arr = np.asarray(preds)
-    targets_arr = np.asarray(targets)
-    acc = accuracy_score((preds_arr >= 0.5).astype(int), targets_arr.astype(int))
-    try:
-        auc = roc_auc_score(targets_arr, preds_arr)
-    except ValueError:
-        auc = float("nan")
-    return float(acc), float(auc)
+def softmax_np(logits: np.ndarray) -> np.ndarray:
+    if logits.size == 0:
+        return logits
+    shifted = logits - np.max(logits, axis=-1, keepdims=True)
+    exp = np.exp(shifted)
+    sums = np.clip(exp.sum(axis=-1, keepdims=True), 1e-12, None)
+    return exp / sums
 
 
-def collect_probabilities(
-    model: nn.Module, loader: DataLoader, device: torch.device
+def collect_model_outputs(
+    model: nn.Module, loader: DataLoader, device: torch.device, num_targets: int
 ) -> Tuple[np.ndarray, np.ndarray]:
     model.eval()
-    probs: List[np.ndarray] = []
-    targets: List[np.ndarray] = []
+    logits_batches: List[torch.Tensor] = []
+    target_batches: List[torch.Tensor] = []
     with torch.no_grad():
         for batch_x, batch_y in loader:
             logits = model(batch_x.to(device))
-            batch_probs = torch.sigmoid(logits).cpu().numpy().ravel()
-            probs.append(batch_probs)
-            targets.append(batch_y.cpu().numpy().ravel())
-    if not probs:
+            logits_batches.append(logits.detach().cpu())
+            target_batches.append(batch_y.detach().cpu())
+    if not logits_batches:
+        empty_logits = np.zeros((0, num_targets, NUM_TARGET_CLASSES), dtype=np.float32)
+        empty_targets = np.zeros((0, num_targets), dtype=np.int64)
+        return empty_logits, empty_targets
+    stacked_logits = torch.cat(logits_batches).numpy()
+    stacked_targets = torch.cat(target_batches).numpy()
+    reshaped_logits = stacked_logits.reshape(-1, num_targets, NUM_TARGET_CLASSES)
+    return reshaped_logits, stacked_targets
+
+
+def evaluate_targets(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    target_configs: List[TargetConfig],
+) -> Dict[str, Dict[str, float]]:
+    num_targets = len(target_configs)
+    logits, targets = collect_model_outputs(model, loader, device, num_targets)
+    metrics: Dict[str, Dict[str, float]] = {}
+    if logits.size == 0:
+        return metrics
+    probs = softmax_np(logits)
+    for idx, cfg in enumerate(target_configs):
+        target_vec = targets[:, idx].astype(int, copy=False)
+        prob_vec = probs[:, idx, :]
+        preds = prob_vec.argmax(axis=1)
+        acc = accuracy_score(target_vec, preds) if len(target_vec) else float("nan")
+        up_probs = prob_vec[:, UP_CLASS_INDEX]
+        up_targets = (target_vec == UP_CLASS_INDEX).astype(int, copy=False)
+        try:
+            auc = roc_auc_score(up_targets, up_probs)
+        except ValueError:
+            auc = float("nan")
+        metrics[cfg.column] = {"acc": float(acc), "auc": float(auc)}
+    return metrics
+
+
+def collect_primary_probabilities(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    primary_index: int,
+    num_targets: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    logits, targets = collect_model_outputs(model, loader, device, num_targets)
+    if logits.size == 0:
         return np.asarray([]), np.asarray([])
-    return np.concatenate(probs), np.concatenate(targets)
+    probs = softmax_np(logits)
+    primary_probs = probs[:, primary_index, UP_CLASS_INDEX]
+    binary_targets = (targets[:, primary_index] == UP_CLASS_INDEX).astype(np.float32)
+    return primary_probs, binary_targets
 
 
 def simulate_trade_entries(
@@ -1300,6 +1495,7 @@ def log_final_split_results(
     acc: float,
     auc: float,
     execution: Optional[Dict[str, Any]] = None,
+    per_target: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> None:
     if not stats:
         logging.info(
@@ -1342,6 +1538,15 @@ def log_final_split_results(
             execution["open_trades"],
             execution["avg_hold_bars"],
         )
+    if per_target:
+        for target_name, target_metrics in per_target.items():
+            logging.info(
+                "Results[%s][%s]: acc=%.3f auc=%.3f",
+                name,
+                target_name,
+                target_metrics.get("acc", float("nan")),
+                target_metrics.get("auc", float("nan")),
+            )
     hourly = stats.get("hourly") if isinstance(stats, dict) else None
     if isinstance(hourly, pd.DataFrame) and not hourly.empty:
         logging.info(
@@ -1366,16 +1571,22 @@ def train_model(
     patience: int,
     min_delta: float,
     model_cfg: Dict[str, Any],
+    target_configs: List[TargetConfig],
 ) -> Tuple[nn.Module, List[Dict[str, float]]]:
     train_loader, val_loader, _ = loaders
+    num_targets = len(target_configs)
+    if num_targets == 0:
+        raise ValueError("At least one target configuration is required")
+    model_cfg = {**model_cfg, "output_dim": num_targets * NUM_TARGET_CLASSES}
     model = DilatedTCN(num_features=num_features, **model_cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = nn.BCEWithLogitsLoss()
     history: List[Dict[str, float]] = []
     best_auc = -float("inf")
     best_state: Optional[Dict[str, torch.Tensor]] = None
     patience = max(patience, 0)
     patience_left = patience
+    weight_tensors = [cfg.class_weights.to(device) for cfg in target_configs]
+    primary_col = target_configs[0].column
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -1384,13 +1595,26 @@ def train_model(
         for batch_x, batch_y in tqdm(train_loader, desc=f"epoch {epoch}", leave=False):
             optimizer.zero_grad()
             logits = model(batch_x.to(device))
-            loss = criterion(logits, batch_y.to(device).float())
+            targets = batch_y.to(device)
+            logits = logits.view(targets.size(0), num_targets, NUM_TARGET_CLASSES)
+            loss_terms: List[torch.Tensor] = []
+            for idx, cfg in enumerate(target_configs):
+                ce = F.cross_entropy(
+                    logits[:, idx, :],
+                    targets[:, idx],
+                    weight=weight_tensors[idx],
+                )
+                loss_terms.append(cfg.weight * ce)
+            loss = torch.stack(loss_terms).sum()
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
             batches += 1
 
-        val_acc, val_auc = evaluate(model, val_loader, device)
+        val_metrics = evaluate_targets(model, val_loader, device, target_configs)
+        primary_metrics = val_metrics.get(primary_col, {})
+        val_acc = primary_metrics.get("acc", float("nan"))
+        val_auc = primary_metrics.get("auc", float("nan"))
         epoch_loss = running_loss / max(batches, 1)
         logging.info(
             "Epoch %d: loss=%.4f val_acc=%.3f val_auc=%.3f",
@@ -1441,7 +1665,7 @@ def run_training_for_feature_set(
         val_days=args.val_days,
         test_days=args.test_days,
         feature_cols=feature_cols,
-        target_column=args.target_column,
+        target_columns=[cfg.column for cfg in args.target_configs],
         external_test=external_test_df,
     )
 
@@ -1450,15 +1674,18 @@ def run_training_for_feature_set(
         "val": extract_price_series(splits.val),
         "test": extract_price_series(splits.test),
     }
+    target_configs = refresh_target_configs(
+        args.target_configs, splits.train, args.class_weight_power
+    )
 
     arrays = standardize_splits(splits)
     (
         train_x,
         val_x,
         test_x,
-        train_y,
-        val_y,
-        test_y,
+        train_targets,
+        val_targets,
+        test_targets,
         active_cols,
         means,
         stds,
@@ -1471,7 +1698,14 @@ def run_training_for_feature_set(
     )
 
     if enable_baseline and not args.skip_baseline:
-        run_logistic_baseline(train_x, val_x, test_x, train_y, val_y, test_y)
+        run_logistic_baseline(
+            train_x,
+            val_x,
+            test_x,
+            train_targets,
+            val_targets,
+            test_targets,
+        )
 
     model_cfg = {
         "hidden": args.tcn_hidden,
@@ -1486,9 +1720,9 @@ def run_training_for_feature_set(
         train_x,
         val_x,
         test_x,
-        train_y,
-        val_y,
-        test_y,
+        train_targets,
+        val_targets,
+        test_targets,
         seq_len=args.sequence_len,
         batch_size=args.batch_size,
     )
@@ -1503,20 +1737,30 @@ def run_training_for_feature_set(
         args.patience,
         args.min_delta,
         model_cfg,
+        target_configs,
     )
 
-    train_acc, train_auc = evaluate(model, loaders[0], device)
-    val_acc, val_auc = evaluate(model, loaders[1], device)
-    test_acc, test_auc = evaluate(model, loaders[2], device)
+    eval_loaders = {
+        name: DataLoader(dl.dataset, batch_size=args.batch_size, shuffle=False)
+        for name, dl in zip(("train", "val", "test"), loaders)
+    }
+    split_metrics: Dict[str, Dict[str, Dict[str, float]]] = {
+        name: evaluate_targets(model, loader, device, target_configs)
+        for name, loader in eval_loaders.items()
+    }
 
-    eval_loaders = tuple(
-        DataLoader(dl.dataset, batch_size=args.batch_size, shuffle=False)
-        for dl in loaders
-    )
-
+    num_targets = len(target_configs)
+    primary_idx = 0
+    primary_col = target_configs[primary_idx].column
     trade_exec: Dict[str, Dict[str, Any]] = {}
-    for split_name, loader_eval in zip(("train", "val", "test"), eval_loaders):
-        probs, _ = collect_probabilities(model, loader_eval, device)
+    for split_name, loader_eval in eval_loaders.items():
+        probs, _ = collect_primary_probabilities(
+            model,
+            loader_eval,
+            device,
+            primary_idx,
+            num_targets,
+        )
         trade_exec[split_name] = simulate_trade_entries(
             probs,
             price_series[split_name],
@@ -1527,12 +1771,25 @@ def run_training_for_feature_set(
             args.trade_stop_ticks,
         )
 
+    def primary_stats(split: str) -> Tuple[float, float]:
+        metrics = split_metrics.get(split, {})
+        primary = metrics.get(primary_col, {})
+        return (
+            float(primary.get("acc", float("nan"))),
+            float(primary.get("auc", float("nan"))),
+        )
+
+    train_acc, train_auc = primary_stats("train")
+    val_acc, val_auc = primary_stats("val")
+    test_acc, test_auc = primary_stats("test")
+
     log_final_split_results(
         f"train ({run_label})",
         splits.stats.get("train"),
         train_acc,
         train_auc,
         trade_exec["train"],
+        split_metrics.get("train"),
     )
     log_final_split_results(
         f"val ({run_label})",
@@ -1540,6 +1797,7 @@ def run_training_for_feature_set(
         val_acc,
         val_auc,
         trade_exec["val"],
+        split_metrics.get("val"),
     )
     log_final_split_results(
         f"test ({run_label})",
@@ -1547,18 +1805,28 @@ def run_training_for_feature_set(
         test_acc,
         test_auc,
         trade_exec["test"],
+        split_metrics.get("test"),
     )
 
     cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+    primary_summary = {
+        "train": {"acc": train_acc, "auc": train_auc},
+        "val": {"acc": val_acc, "auc": val_auc},
+        "test": {"acc": test_acc, "auc": test_auc},
+    }
+
     return {
         "label": run_label,
         "active_cols": active_cols,
         "scaler": {"means": means.to_dict(), "stds": stds.to_dict()},
         "model_state_dict": cpu_state,
         "metrics": {
-            "train": {"acc": train_acc, "auc": train_auc},
-            "val": {"acc": val_acc, "auc": val_auc},
-            "test": {"acc": test_acc, "auc": test_auc},
+            split: {
+                "acc": primary_summary[split]["acc"],
+                "auc": primary_summary[split]["auc"],
+                "per_target": split_metrics.get(split, {}),
+            }
+            for split in ("train", "val", "test")
         },
         "trade_exec": trade_exec,
     }
@@ -1569,6 +1837,12 @@ def _serialize_args(args: argparse.Namespace) -> Dict[str, Any]:
     for key, value in vars(args).items():
         if isinstance(value, Path):
             serialized[key] = str(value)
+        elif key == "target_configs" and isinstance(value, list):
+            serialized[key] = [
+                {"column": cfg.column, "weight": cfg.weight}
+                for cfg in value
+                if isinstance(cfg, TargetConfig)
+            ]
         else:
             serialized[key] = value
     return serialized
@@ -1787,16 +2061,17 @@ def main() -> None:
     dataset, target_columns = combine_feature_label_frames(feature_frames, label_frames)
     if not target_columns:
         raise RuntimeError("No target columns were generated from the labels")
-    target_column = resolve_target_column_name(args.target)
-    if target_column not in target_columns:
-        raise ValueError(
-            f"Requested target '{target_column}' not available; choose from {target_columns}"
-        )
-    setattr(args, "target_column", target_column)
+    primary_target = resolve_target_column_name(args.target)
+    requested_targets = args.targets or [args.target]
+    training_targets = resolve_requested_targets(
+        requested_targets, args.target, target_columns
+    )
+    setattr(args, "target_column", primary_target)
+    setattr(args, "target_columns", training_targets)
     logging.info(
         "Available targets: %s (selected %s)",
         ", ".join(target_columns),
-        target_column,
+        ", ".join(training_targets),
     )
     requested_sets = {args.feature_set}
     if args.compare_phase4:
@@ -1804,12 +2079,19 @@ def main() -> None:
     required_columns = sorted(
         {col for name in requested_sets for col in FEATURE_SET_COLUMNS[name]}
     )
-    dataset.dropna(subset=[target_column], inplace=True)
+    dataset.dropna(subset=training_targets, inplace=True)
     dataset.reset_index(drop=True, inplace=True)
     if dataset.empty:
         raise RuntimeError(
-            f"No feature rows remain after aligning labels for {target_column}"
+            "No feature rows remain after aligning labels for the requested targets"
         )
+    target_configs = compute_target_metadata(
+        dataset,
+        training_targets,
+        args.target_loss_weights,
+        args.class_weight_power,
+    )
+    setattr(args, "target_configs", target_configs)
     ensure_feature_columns(dataset, required_columns)
     ensure_feature_columns(dataset, PRICE_COLUMNS)
     data_quality_checks(dataset, FEATURE_SET_COLUMNS[args.feature_set])
@@ -1845,18 +2127,26 @@ def main() -> None:
         external_test_df, ext_targets = combine_feature_label_frames(
             test_feature_frames, test_label_frames
         )
-        if target_column not in ext_targets:
+        if primary_target not in ext_targets:
             logging.warning(
                 "External test set missing target %s (available: %s)",
-                target_column,
+                primary_target,
                 ", ".join(ext_targets),
             )
-        external_test_df.dropna(subset=[target_column], inplace=True)
+        missing_targets = [col for col in training_targets if col not in ext_targets]
+        if missing_targets:
+            logging.warning(
+                "External test set missing %d target(s): %s",
+                len(missing_targets),
+                ", ".join(missing_targets),
+            )
+        ext_required = [col for col in training_targets if col in ext_targets]
+        external_test_df.dropna(subset=ext_required or [primary_target], inplace=True)
         external_test_df.reset_index(drop=True, inplace=True)
         if external_test_df.empty:
             logging.warning(
                 "External test set has no rows after filtering by %s",
-                target_column,
+                ", ".join(ext_required or [primary_target]),
             )
         ensure_feature_columns(external_test_df, required_columns)
         ensure_feature_columns(external_test_df, PRICE_COLUMNS)

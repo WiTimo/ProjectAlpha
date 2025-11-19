@@ -318,8 +318,8 @@ fn write_labels_parquet(path: &Path, labels: &[Label], targets: &[TargetSpec]) -
 const fn encode_outcome(outcome: LabelOutcome) -> i8 {
     match outcome {
         LabelOutcome::HitUp => 1,
-        LabelOutcome::HitDown => 0,
-        LabelOutcome::NoHit => -1,
+        LabelOutcome::HitDown => -1,
+        LabelOutcome::NoHit => 0,
     }
 }
 

@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::f64::consts::TAU;
 use std::fs;
 use std::path::Path;
@@ -24,14 +25,10 @@ const TRADE_VOLUME_REL_CLAMP: f64 = 15.0;
 const US_SESSION_OPEN_SECONDS: i64 = 9 * 3600 + 30 * 60;
 const US_SESSION_CLOSE_SECONDS: i64 = 16 * 3600;
 const US_SESSION_LENGTH_SECONDS: f64 = (US_SESSION_CLOSE_SECONDS - US_SESSION_OPEN_SECONDS) as f64;
-const SPREAD_LOW_TICKS: f64 = 2.0;
-const SPREAD_HIGH_TICKS: f64 = 6.0;
 const DEPTH_LOW_REL: f64 = 1.0;
 const DEPTH_HIGH_REL: f64 = 3.0;
 const VOLUME_LOW_REL: f64 = 0.5;
 const VOLUME_HIGH_REL: f64 = 1.5;
-const VOLATILITY_LOW_ABS: f64 = 0.0005;
-const VOLATILITY_HIGH_ABS: f64 = 0.0015;
 const SPEED_LOW_TPS: f64 = 0.5;
 const SPEED_HIGH_TPS: f64 = 1.5;
 
@@ -59,9 +56,25 @@ impl CoreFeatureExtractor {
     }
 
     pub fn compute(&mut self, bars: &[Bar]) -> Vec<CoreFeatureRow> {
-        bars.iter()
+        let mut rows: Vec<CoreFeatureRow> = bars
+            .iter()
             .filter_map(|bar| self.compute_row(bar))
-            .collect()
+            .collect();
+        if rows.is_empty() {
+            return rows;
+        }
+
+        assign_percentile_regime(
+            &mut rows,
+            |row| row.spread_ticks,
+            |row, regime| row.spread_regime = regime,
+        );
+        assign_percentile_regime(
+            &mut rows,
+            |row| row.rv_log,
+            |row, regime| row.volatility_regime = regime,
+        );
+        rows
     }
 
     fn compute_row(&mut self, bar: &Bar) -> Option<CoreFeatureRow> {
@@ -127,7 +140,6 @@ impl CoreFeatureExtractor {
             0.0
         };
         let rv_log = (rv_var + self.epsilon).ln();
-        let rv_std = rv_var.sqrt();
 
         let cum_bid = bar.book.cumulative_bid_size();
         let cum_ask = bar.book.cumulative_ask_size();
@@ -176,10 +188,10 @@ impl CoreFeatureExtractor {
         let ofi_net_rel = ofi_net / avg_depth;
         let ofi_net_log = signed_log1p(ofi_net_rel);
         let total_depth_rel = cum_bid_scaled.relative + cum_ask_scaled.relative;
-        let spread_regime = encode_regime(spread, SPREAD_LOW_TICKS, SPREAD_HIGH_TICKS);
+        let spread_regime = 0.0;
         let depth_regime = encode_regime(total_depth_rel, DEPTH_LOW_REL, DEPTH_HIGH_REL);
         let volume_regime = encode_regime(trade_volume_sum_rel, VOLUME_LOW_REL, VOLUME_HIGH_REL);
-        let volatility_regime = encode_regime(rv_std, VOLATILITY_LOW_ABS, VOLATILITY_HIGH_ABS);
+        let volatility_regime = 0.0;
         let speed_regime = encode_regime(speed_tps, SPEED_LOW_TPS, SPEED_HIGH_TPS);
         let (tod_sin, tod_cos, is_us_session) = compute_tod_features(&bar.start);
 
@@ -416,6 +428,42 @@ fn encode_regime(value: f64, low: f64, high: f64) -> f64 {
     } else {
         0.0
     }
+}
+
+fn assign_percentile_regime<F, G>(rows: &mut [CoreFeatureRow], getter: F, setter: G)
+where
+    F: Fn(&CoreFeatureRow) -> f64,
+    G: Fn(&mut CoreFeatureRow, f64),
+{
+    let mut samples: Vec<f64> = rows
+        .iter()
+        .map(|row| getter(row))
+        .filter(|value| value.is_finite())
+        .collect();
+    if samples.len() < 3 {
+        return;
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let low = percentile(&samples, 0.33);
+    let high = percentile(&samples, 0.66);
+    if !low.is_finite() || !high.is_finite() {
+        return;
+    }
+
+    rows.iter_mut().for_each(|row| {
+        let value = getter(row);
+        let regime = encode_regime(value, low, high);
+        setter(row, regime);
+    });
+}
+
+fn percentile(sorted: &[f64], pct: f64) -> f64 {
+    if sorted.is_empty() {
+        return f64::NAN;
+    }
+    let clamped = pct.clamp(0.0, 1.0);
+    let idx = ((sorted.len() - 1) as f64 * clamped).round() as usize;
+    sorted[idx]
 }
 
 fn compute_tod_features(ts: &OffsetDateTime) -> (f64, f64, f64) {

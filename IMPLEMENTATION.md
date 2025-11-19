@@ -13,11 +13,17 @@ Before touching features:
 1.  Implement label logic in Rust:
 
     - Example: “hit +X ticks before −Y within K events from time t”.
+      - We now scale the lookahead window with the tick target: 1.2k events for ±20, 2.4k for ±40,
+        3.6k for ±60, 6k for ±100. This keeps the 25-pip (`t100`) barrier realistic while letting
+        shorter horizons stay responsive.
 
 2.  Check labels:
 
     - Compute label distribution over time (ratio of 1/0).
     - Make sure there is no obvious drift when you change parameters.
+    - Encoding sanity check: Parquet outputs now store `1 = hit up first`, `0 = no hit within horizon`,
+      and `-1 = hit down first`. If a histogram shows almost everything at `-1`, it really means
+      "no hit" rather than "always down"; decode accordingly before drawing conclusions.
 
 3.  Split data strictly by time:
 
@@ -248,6 +254,10 @@ Add:
 
 Export, standardize, train, compare.  
 These often help with stability across sessions and regimes.
+
+Implementation note: spread/volatility regimes are now derived from causal per-file percentiles
+(~33%/~66%). If you need different breakpoints, adjust the percentile targets instead of hardcoding
+absolute tick or RV thresholds; this keeps the buckets balanced even when volatility drifts.
 
 ---
 

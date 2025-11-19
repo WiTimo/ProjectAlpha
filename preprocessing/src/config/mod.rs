@@ -246,25 +246,25 @@ impl LabelConfig {
                 name: "t20".into(),
                 up_ticks: 20.0,
                 down_ticks: 20.0,
-                lookahead_events: Self::default_lookahead_events(),
+                lookahead_events: 1200,
             },
             TargetSpec {
                 name: "t40".into(),
                 up_ticks: 40.0,
                 down_ticks: 40.0,
-                lookahead_events: Self::default_lookahead_events(),
+                lookahead_events: 2400,
             },
             TargetSpec {
                 name: "t60".into(),
                 up_ticks: 60.0,
                 down_ticks: 60.0,
-                lookahead_events: Self::default_lookahead_events(),
+                lookahead_events: 3600,
             },
             TargetSpec {
                 name: "t100".into(),
                 up_ticks: 100.0,
                 down_ticks: 100.0,
-                lookahead_events: Self::default_lookahead_events(),
+                lookahead_events: 6000,
             },
         ]
     }

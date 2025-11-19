@@ -34,7 +34,7 @@ is_us_session                  float64                    0    0.00%            
 spread_regime                  float64                    0    0.00%            3
 depth_regime                   float64                    0    0.00%            3
 volume_regime                  float64                    0    0.00%            3
-volatility_regime              float64                    0    0.00%            1
+volatility_regime              float64                    0    0.00%            3
 speed_regime                   float64                    0    0.00%            3
 limit_add_bid_volume_rel       float64                    0    0.00%       29,062
 limit_add_ask_volume_rel       float64                    0    0.00%       29,611
@@ -566,17 +566,17 @@ Total rows: 35,890
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    1.0: 35,791 (99.72%)
-    0.0: 97 (0.27%)
-    -1.0: 2 (0.01%)
+    0.0: 15,924 (44.37%)
+    1.0: 12,078 (33.65%)
+    -1.0: 7,888 (21.98%)
   Non-null count: 35,890.0
-  Mean:          0.997186
-  Std dev:       0.0540164
+  Mean:          0.116746
+  Std dev:       0.736679
    min:          -1
-   1  :          1
-   5  :          1
-   25 :          1
-   50 :          1
+   1  :          -1
+   5  :          -1
+   25 :          0
+   50 :          0
    75 :          1
    95 :          1
    99 :          1
@@ -630,21 +630,23 @@ Unique non-null values: 3
 Dtype: float64
 Total rows: 35,890
 Nulls: 0 (0.00%)
-Unique non-null values: 1
+Unique non-null values: 3
   Value distribution (including NaN):
-    -1.0: 35,890 (100.00%)
+    1.0: 12,201 (34.00%)
+    0.0: 11,849 (33.01%)
+    -1.0: 11,840 (32.99%)
   Non-null count: 35,890.0
-  Mean:          -1
-  Std dev:       0
+  Mean:          0.0100585
+  Std dev:       0.818395
    min:          -1
    1  :          -1
    5  :          -1
    25 :          -1
-   50 :          -1
-   75 :          -1
-   95 :          -1
-   99 :          -1
-   max:          -1
+   50 :          0
+   75 :          1
+   95 :          1
+   99 :          1
+   max:          1
 
 --- Column: speed_regime ---
 Dtype: float64
