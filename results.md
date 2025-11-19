@@ -1,7 +1,7 @@
 # Phase 1-4:
 
-Accuracy: 55-61%
+Accuracy: 60-70% (auf test 60%, fehlt orderflow + wird noch geringer wegen latenzy etc.)
 
 # Phase 5:
 
-not working, have to redo this then
+muss jetzt preprocessen nochmal rennen und dann training nochmal schauen wie das dann ausgeht

@@ -1,6 +1,6 @@
 === BASIC DATASET INFO ===
 Rows:    35,890
-Columns: 48
+Columns: 50
 
 === COLUMN OVERVIEW ===
 Name                           Dtype                  Nulls    Null%       Unique
@@ -18,11 +18,13 @@ imbalance_best                 float64                    0    0.00%           2
 cum_bid_size_l_rel             float64                    0    0.00%       35,890
 cum_ask_size_l_rel             float64                    0    0.00%       35,890
 imbalance_l                    float64                    0    0.00%          332
-trade_volume_sum_rel           float64                    0    0.00%       28,162
+trade_volume_sum_rel           float64                    0    0.00%       28,074
 trade_count_log                float64                    0    0.00%           59
 buy_trade_volume_rel           float64                    0    0.00%       24,390
 sell_trade_volume_rel          float64                    0    0.00%       23,918
 trade_imbalance_ratio          float64                    0    0.00%          602
+has_buy_trade                  float64                    0    0.00%            2
+has_sell_trade                 float64                    0    0.00%            2
 avg_buy_dist_to_ask            float64                    0    0.00%          955
 avg_sell_dist_to_bid           float64                    0    0.00%          997
 rv_log                         float64                    0    0.00%       26,043
@@ -311,10 +313,10 @@ Unique non-null values: 332
 Dtype: float64
 Total rows: 35,890
 Nulls: 0 (0.00%)
-Unique non-null values: 28,162
+Unique non-null values: 28,074
   Non-null count: 35,890.0
-  Mean:          1.40737
-  Std dev:       14.7652
+  Mean:          0.988493
+  Std dev:       3.70755
    min:          0
    1  :          0
    5  :          0
@@ -323,7 +325,7 @@ Unique non-null values: 28,162
    75 :          1.08401
    95 :          2.46616
    99 :          4.5994
-   max:          886.051
+   max:          64
 
 --- Column: trade_count_log ---
 Dtype: float64
@@ -393,6 +395,48 @@ Unique non-null values: 602
    25 :          -0.272727
    50 :          0
    75 :          0.333333
+   95 :          1
+   99 :          1
+   max:          1
+
+--- Column: has_buy_trade ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 2
+  Value distribution (including NaN):
+    1.0: 24,389 (67.95%)
+    0.0: 11,501 (32.05%)
+  Non-null count: 35,890.0
+  Mean:          0.679549
+  Std dev:       0.466657
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          1
+   75 :          1
+   95 :          1
+   99 :          1
+   max:          1
+
+--- Column: has_sell_trade ---
+Dtype: float64
+Total rows: 35,890
+Nulls: 0 (0.00%)
+Unique non-null values: 2
+  Value distribution (including NaN):
+    1.0: 23,917 (66.64%)
+    0.0: 11,973 (33.36%)
+  Non-null count: 35,890.0
+  Mean:          0.666397
+  Std dev:       0.471506
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          1
+   75 :          1
    95 :          1
    99 :          1
    max:          1

@@ -55,13 +55,16 @@ CORE_FEATURE_COLUMNS = [
     "rv_log",
 ]
 
-# Group D/E – order flow + aggressor stats
-ORDERFLOW_COLUMNS = [
+# Group D – simple order flow
+GROUP_D_COLUMNS = [
     "limit_add_bid_volume_rel",
     "limit_add_ask_volume_rel",
     "limit_cancel_bid_volume_rel",
     "limit_cancel_ask_volume_rel",
     "limit_of_imbalance",
+]
+
+OFI_COLUMNS = [
     "ofi_bid",
     "ofi_ask",
     "ofi_net_log",
@@ -73,6 +76,8 @@ AGGRESSOR_COLUMNS = [
     "trade_imbalance_ratio",
     "avg_buy_dist_to_ask",
     "avg_sell_dist_to_bid",
+    "has_buy_trade",
+    "has_sell_trade",
 ]
 
 # Optional presence flags – level 1 is always 1.0, so we only use 2/3.
@@ -83,14 +88,20 @@ PRESENCE_COLUMNS = [
     "ask_level_3_present",
 ]
 
-FEATURE_COLUMNS = (
+PHASE4_FEATURE_COLUMNS = (
     CORE_FEATURE_COLUMNS
-    + ORDERFLOW_COLUMNS
-    + AGGRESSOR_COLUMNS
+    + GROUP_D_COLUMNS
     + LEVEL_OFFSETS_COLUMNS
     + LEVEL_SIZE_COLUMNS
     + PRESENCE_COLUMNS
 )
+
+PHASE5_FEATURE_COLUMNS = PHASE4_FEATURE_COLUMNS + OFI_COLUMNS + AGGRESSOR_COLUMNS
+
+FEATURE_SET_COLUMNS = {
+    "phase4": PHASE4_FEATURE_COLUMNS,
+    "phase5": PHASE5_FEATURE_COLUMNS,
+}
 
 PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]
 
@@ -121,11 +132,6 @@ WINSOR_COLUMNS = [
 
 WINSOR_LOWER = 0.001
 WINSOR_UPPER = 0.999
-
-
-# -------------------------------------------------------
-# Data containers
-# -------------------------------------------------------
 
 
 @dataclass
@@ -293,6 +299,13 @@ def parse_args() -> argparse.Namespace:
         help="Resolution folder to load",
     )
     parser.add_argument(
+        "--feature-set",
+        type=str,
+        default="phase5",
+        choices=sorted(FEATURE_SET_COLUMNS.keys()),
+        help="Which feature group to train (phase4 excludes OFI/aggressor additions)",
+    )
+    parser.add_argument(
         "--limit-files",
         "--limit",
         type=int,
@@ -410,6 +423,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Torch device override",
+    )
+    parser.add_argument(
+        "--compare-phase4",
+        action="store_true",
+        help="Train an additional Phase 4 baseline (ignoring OFI/aggressor features) for comparison",
     )
     return parser.parse_args()
 
@@ -752,6 +770,7 @@ def build_splits(
     val_ratio: float,
     val_days: int,
     test_days: int,
+    feature_cols: List[str],
     external_test: Optional[pd.DataFrame] = None,
 ) -> DatasetSplits:
     if split_mode == "rows":
@@ -767,7 +786,7 @@ def build_splits(
         train=train.reset_index(drop=True),
         val=val.reset_index(drop=True),
         test=test.reset_index(drop=True),
-        feature_cols=FEATURE_COLUMNS,
+        feature_cols=feature_cols,
     )
     splits.stats = {
         "train": summarize_split("train", splits.train),
@@ -1132,45 +1151,15 @@ def train_model(
     return model, history
 
 
-# -------------------------------------------------------
-# Main
-# -------------------------------------------------------
-
-
-def main() -> None:
-    args = parse_args()
-    logging.basicConfig(
-        level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s"
-    )
-    logging.info("Starting Phase 1–5 validation with args: %s", vars(args))
-
-    feature_files = discover_feature_files(
-        args.feature_root, args.resolution, args.limit_files
-    )
-    feature_frames = load_feature_frames(feature_files)
-    label_frames = load_labels(args.label_root, [f.stem for f in feature_files])
-    dataset = combine_feature_label_frames(feature_frames, label_frames)
-    ensure_feature_columns(dataset, FEATURE_COLUMNS)
-    ensure_feature_columns(dataset, PRICE_COLUMNS)
-    data_quality_checks(dataset, FEATURE_COLUMNS)
-
-    external_test_df: Optional[pd.DataFrame] = None
-    if args.feature_root_test is not None:
-        label_root_test = args.label_root_test or args.label_root
-        test_feature_files = discover_feature_files(
-            args.feature_root_test, args.resolution, args.test_limit_files
-        )
-        test_feature_frames = load_feature_frames(test_feature_files)
-        test_label_frames = load_labels(
-            label_root_test, [f.stem for f in test_feature_files]
-        )
-        external_test_df = combine_feature_label_frames(
-            test_feature_frames, test_label_frames
-        )
-        ensure_feature_columns(external_test_df, FEATURE_COLUMNS)
-        ensure_feature_columns(external_test_df, PRICE_COLUMNS)
-        data_quality_checks(external_test_df, FEATURE_COLUMNS)
-
+def run_training_for_feature_set(
+    run_label: str,
+    feature_cols: List[str],
+    dataset: pd.DataFrame,
+    external_test_df: Optional[pd.DataFrame],
+    args: argparse.Namespace,
+    device: torch.device,
+    enable_baseline: bool,
+) -> Dict[str, Any]:
     splits = build_splits(
         dataset,
         split_mode=args.split_mode,
@@ -1178,22 +1167,34 @@ def main() -> None:
         val_ratio=0.15,
         val_days=args.val_days,
         test_days=args.test_days,
+        feature_cols=feature_cols,
         external_test=external_test_df,
     )
-    arrays = standardize_splits(splits)
+
     price_series = {
         "train": extract_price_series(splits.train),
         "val": extract_price_series(splits.val),
         "test": extract_price_series(splits.test),
     }
-    train_x, val_x, test_x, train_y, val_y, test_y, active_cols = arrays
+
+    arrays = standardize_splits(splits)
+    (
+        train_x,
+        val_x,
+        test_x,
+        train_y,
+        val_y,
+        test_y,
+        active_cols,
+    ) = arrays
     logging.info(
-        "Active feature columns (%d): %s",
+        "[%s] Active feature columns (%d): %s",
+        run_label,
         len(active_cols),
         ", ".join(active_cols),
     )
 
-    if not args.skip_baseline:
+    if enable_baseline and not args.skip_baseline:
         run_logistic_baseline(train_x, val_x, test_x, train_y, val_y, test_y)
 
     loaders = build_dataloaders(
@@ -1207,7 +1208,6 @@ def main() -> None:
         batch_size=args.batch_size,
     )
 
-    device = torch.device(args.device)
     model, _ = train_model(
         loaders,
         len(active_cols),
@@ -1242,24 +1242,136 @@ def main() -> None:
             args.trade_stop_ticks,
         )
 
-    logging.info(
-        "Final metrics -> train: acc=%.3f auc=%.3f | val: acc=%.3f auc=%.3f | test: acc=%.3f auc=%.3f",
+    log_final_split_results(
+        f"train ({run_label})",
+        splits.stats.get("train"),
         train_acc,
         train_auc,
+        trade_exec["train"],
+    )
+    log_final_split_results(
+        f"val ({run_label})",
+        splits.stats.get("val"),
         val_acc,
         val_auc,
+        trade_exec["val"],
+    )
+    log_final_split_results(
+        f"test ({run_label})",
+        splits.stats.get("test"),
         test_acc,
         test_auc,
+        trade_exec["test"],
     )
-    log_final_split_results(
-        "train", splits.stats.get("train"), train_acc, train_auc, trade_exec["train"]
+
+    return {
+        "label": run_label,
+        "active_cols": active_cols,
+        "metrics": {
+            "train": {"acc": train_acc, "auc": train_auc},
+            "val": {"acc": val_acc, "auc": val_auc},
+            "test": {"acc": test_acc, "auc": test_auc},
+        },
+        "trade_exec": trade_exec,
+    }
+
+
+def log_phase_comparison(baseline: Dict[str, Any], contender: Dict[str, Any]) -> None:
+    base_label = baseline["label"]
+    new_label = contender["label"]
+    for split in ("val", "test"):
+        base_metrics = baseline["metrics"].get(split, {})
+        new_metrics = contender["metrics"].get(split, {})
+        base_auc = base_metrics.get("auc") or float("nan")
+        new_auc = new_metrics.get("auc") or float("nan")
+        base_acc = base_metrics.get("acc") or float("nan")
+        new_acc = new_metrics.get("acc") or float("nan")
+        logging.info(
+            "%s vs %s on %s: Δauc=%.4f Δacc=%.4f",
+            new_label,
+            base_label,
+            split,
+            new_auc - base_auc,
+            new_acc - base_acc,
+        )
+
+
+# -------------------------------------------------------
+# Main
+# -------------------------------------------------------
+
+
+def main() -> None:
+    args = parse_args()
+    logging.basicConfig(
+        level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s"
     )
-    log_final_split_results(
-        "val", splits.stats.get("val"), val_acc, val_auc, trade_exec["val"]
+    logging.info("Starting Phase 1–5 validation with args: %s", vars(args))
+
+    feature_files = discover_feature_files(
+        args.feature_root, args.resolution, args.limit_files
     )
-    log_final_split_results(
-        "test", splits.stats.get("test"), test_acc, test_auc, trade_exec["test"]
+    feature_frames = load_feature_frames(feature_files)
+    label_frames = load_labels(args.label_root, [f.stem for f in feature_files])
+    dataset = combine_feature_label_frames(feature_frames, label_frames)
+    requested_sets = {args.feature_set}
+    if args.compare_phase4:
+        requested_sets.add("phase4")
+    required_columns = sorted(
+        {col for name in requested_sets for col in FEATURE_SET_COLUMNS[name]}
     )
+    ensure_feature_columns(dataset, required_columns)
+    ensure_feature_columns(dataset, PRICE_COLUMNS)
+    data_quality_checks(dataset, FEATURE_SET_COLUMNS[args.feature_set])
+
+    external_test_df: Optional[pd.DataFrame] = None
+    if args.feature_root_test is not None:
+        label_root_test = args.label_root_test or args.label_root
+        test_feature_files = discover_feature_files(
+            args.feature_root_test, args.resolution, args.test_limit_files
+        )
+        test_feature_frames = load_feature_frames(test_feature_files)
+        test_label_frames = load_labels(
+            label_root_test, [f.stem for f in test_feature_files]
+        )
+        external_test_df = combine_feature_label_frames(
+            test_feature_frames, test_label_frames
+        )
+        ensure_feature_columns(external_test_df, required_columns)
+        ensure_feature_columns(external_test_df, PRICE_COLUMNS)
+        data_quality_checks(external_test_df, FEATURE_SET_COLUMNS[args.feature_set])
+
+    device = torch.device(args.device)
+
+    baseline_run: Optional[Dict[str, Any]] = None
+    if args.compare_phase4 and args.feature_set != "phase4":
+        logging.info("Running Phase 4 baseline for comparison")
+        baseline_run = run_training_for_feature_set(
+            "phase4",
+            FEATURE_SET_COLUMNS["phase4"],
+            dataset,
+            external_test_df,
+            args,
+            device,
+            enable_baseline=False,
+        )
+    elif args.compare_phase4:
+        logging.info(
+            "compare-phase4 requested but feature-set already phase4; skipping duplicate run"
+        )
+
+    primary_run = run_training_for_feature_set(
+        args.feature_set,
+        FEATURE_SET_COLUMNS[args.feature_set],
+        dataset,
+        external_test_df,
+        args,
+        device,
+        enable_baseline=True,
+    )
+
+    if baseline_run is not None and args.feature_set != "phase4":
+        log_phase_comparison(baseline_run, primary_run)
 
 
 if __name__ == "__main__":

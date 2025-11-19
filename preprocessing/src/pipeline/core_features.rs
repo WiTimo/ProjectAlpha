@@ -18,6 +18,7 @@ const MAX_LEVEL_OFFSET_TICKS: f64 = 256.0;
 const RV_MIN_OBSERVATIONS: usize = 2;
 const FLOW_REL_CLAMP: f64 = 25.0;
 const LIMIT_OF_IMBALANCE_CLAMP: f64 = 10.0;
+const TRADE_VOLUME_REL_CLAMP: f64 = 15.0;
 
 pub struct CoreFeatureExtractor {
     tick_size: f64,
@@ -69,6 +70,7 @@ impl CoreFeatureExtractor {
 
         let imbalance = compute_imbalance(bar, self.epsilon);
         let volume_scaled = self.scaler.normalize_volume(bar.trade_volume_sum);
+        let trade_volume_sum_rel = clamp_trade_volume(volume_scaled.relative);
         let trade_count_log = (bar.trade_count as f64).ln_1p();
         let volume_divisor = volume_scaled.divisor.abs() + self.epsilon;
         let buy_trade_volume_rel = if volume_divisor > 0.0 {
@@ -81,11 +83,19 @@ impl CoreFeatureExtractor {
         } else {
             0.0
         };
-        let trade_imbalance_ratio = compute_depth_imbalance(
-            bar.buy_trade_volume,
-            bar.sell_trade_volume,
-            self.epsilon,
-        );
+        let trade_imbalance_ratio = if bar.buy_trade_volume <= self.epsilon
+            && bar.sell_trade_volume <= self.epsilon
+        {
+            0.0
+        } else {
+            compute_depth_imbalance(
+                bar.buy_trade_volume,
+                bar.sell_trade_volume,
+                self.epsilon,
+            )
+        };
+        let has_buy_trade = if bar.buy_trade_count > 0 { 1.0 } else { 0.0 };
+        let has_sell_trade = if bar.sell_trade_count > 0 { 1.0 } else { 0.0 };
         let avg_buy_dist_to_ask = average_distance_ticks(
             bar.buy_distance_to_ask_sum,
             bar.buy_trade_count,
@@ -168,11 +178,13 @@ impl CoreFeatureExtractor {
             cum_bid_size_l_rel: cum_bid_scaled.relative,
             cum_ask_size_l_rel: cum_ask_scaled.relative,
             imbalance_l,
-            trade_volume_sum_rel: volume_scaled.relative,
+            trade_volume_sum_rel,
             trade_count_log,
             buy_trade_volume_rel,
             sell_trade_volume_rel,
             trade_imbalance_ratio,
+            has_buy_trade,
+            has_sell_trade,
             avg_buy_dist_to_ask,
             avg_sell_dist_to_bid,
             rv_log,
@@ -215,6 +227,8 @@ pub struct CoreFeatureRow {
     pub buy_trade_volume_rel: f64,
     pub sell_trade_volume_rel: f64,
     pub trade_imbalance_ratio: f64,
+    pub has_buy_trade: f64,
+    pub has_sell_trade: f64,
     pub avg_buy_dist_to_ask: f64,
     pub avg_sell_dist_to_bid: f64,
     pub rv_log: f64,
@@ -350,6 +364,12 @@ fn clamp_limit_imbalance(value: f64) -> f64 {
         .min(LIMIT_OF_IMBALANCE_CLAMP)
 }
 
+fn clamp_trade_volume(value: f64) -> f64 {
+    value
+        .max(-TRADE_VOLUME_REL_CLAMP)
+        .min(TRADE_VOLUME_REL_CLAMP)
+}
+
 pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
@@ -380,6 +400,8 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         Field::new("buy_trade_volume_rel", DataType::Float64, false),
         Field::new("sell_trade_volume_rel", DataType::Float64, false),
         Field::new("trade_imbalance_ratio", DataType::Float64, false),
+        Field::new("has_buy_trade", DataType::Float64, false),
+        Field::new("has_sell_trade", DataType::Float64, false),
         Field::new("avg_buy_dist_to_ask", DataType::Float64, false),
         Field::new("avg_sell_dist_to_bid", DataType::Float64, false),
         Field::new("rv_log", DataType::Float64, false),
@@ -460,6 +482,8 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         Float64Array::from_iter_values(rows.iter().map(|r| r.sell_trade_volume_rel));
     let trade_imbalance_ratio =
         Float64Array::from_iter_values(rows.iter().map(|r| r.trade_imbalance_ratio));
+    let has_buy_trade = Float64Array::from_iter_values(rows.iter().map(|r| r.has_buy_trade));
+    let has_sell_trade = Float64Array::from_iter_values(rows.iter().map(|r| r.has_sell_trade));
     let avg_buy_dist_to_ask =
         Float64Array::from_iter_values(rows.iter().map(|r| r.avg_buy_dist_to_ask));
     let avg_sell_dist_to_bid =
@@ -500,6 +524,8 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
         std::sync::Arc::new(buy_trade_volume_rel),
         std::sync::Arc::new(sell_trade_volume_rel),
         std::sync::Arc::new(trade_imbalance_ratio),
+        std::sync::Arc::new(has_buy_trade),
+        std::sync::Arc::new(has_sell_trade),
         std::sync::Arc::new(avg_buy_dist_to_ask),
         std::sync::Arc::new(avg_sell_dist_to_bid),
         std::sync::Arc::new(rv_log),
@@ -789,7 +815,7 @@ mod tests {
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let batch = reader.next().expect("batch")?;
         assert_eq!(batch.num_rows(), 1);
-        let expected_columns = 30 + (6 * LEVEL_FEATURE_COUNT);
+        let expected_columns = 32 + (6 * LEVEL_FEATURE_COUNT);
         assert_eq!(batch.num_columns(), expected_columns);
         Ok(())
     }
