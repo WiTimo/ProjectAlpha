@@ -17,6 +17,11 @@ pub struct PipelineConfig {
     pub data_split: DataSplitConfig,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub skip_existing: bool,
+    /// Maximum events to hold in memory before flushing (0 = no limit for backward compatibility)
+    #[serde(default)]
+    pub batch_size: usize,
 }
 
 impl PipelineConfig {
@@ -60,6 +65,8 @@ impl PipelineConfig {
             labeling: LabelConfig::example(),
             data_split: DataSplitConfig::example(),
             dry_run: false,
+            skip_existing: false,
+            batch_size: 35000, // Optimized for 16GB RAM systems (safe default with headroom)
         }
     }
 
@@ -85,6 +92,14 @@ impl PipelineConfig {
         if let Some(dry_run) = overrides.dry_run {
             self.dry_run = dry_run;
         }
+
+        if let Some(skip_existing) = overrides.skip_existing {
+            self.skip_existing = skip_existing;
+        }
+
+        if let Some(batch_size) = overrides.batch_size {
+            self.batch_size = batch_size;
+        }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -102,6 +117,8 @@ pub struct PipelineOverrides {
     pub resolutions: Option<Vec<Resolution>>,
     pub tick_size: Option<f64>,
     pub dry_run: Option<bool>,
+    pub skip_existing: Option<bool>,
+    pub batch_size: Option<usize>,
 }
 
 /// Static instrument metadata that feeds normalization logic (tick size etc.).

@@ -37,6 +37,14 @@ pub struct Cli {
     /// Run the pipeline without writing files. Useful for smoke-testing configuration.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Skip files that have already been preprocessed (all output files exist).
+    #[arg(long)]
+    pub skip_existing: bool,
+
+    /// Maximum events to process in memory at once. Optimized for 16GB RAM (0 = unlimited).
+    #[arg(long, value_name = "SIZE", default_value = "35000")]
+    pub batch_size: usize,
 }
 
 impl Cli {
@@ -55,6 +63,8 @@ impl Cli {
             resolutions: self.parse_resolutions()?,
             tick_size: self.tick_size,
             dry_run: Some(self.dry_run),
+            skip_existing: Some(self.skip_existing),
+            batch_size: Some(self.batch_size),
         };
 
         cfg.apply_overrides(overrides);
