@@ -612,6 +612,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("runs") / "regimes",
         help="Directory to store trained regime model bundles",
     )
+    parser.add_argument(
+        "--model-export-dir",
+        type=Path,
+        default=Path("runs") / "models",
+        help="Directory where trained single-model bundles will be saved",
+    )
     return parser.parse_args()
 
 
@@ -2253,6 +2259,50 @@ def save_regime_bundle(
     return path
 
 
+def save_training_bundle(
+    result: Dict[str, Any],
+    args: argparse.Namespace,
+    export_dir: Path,
+) -> Path:
+    export_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{result['label']}_model.pt"
+    path = export_dir / filename
+    bundle = {
+        "label": result["label"],
+        "feature_set": args.feature_set,
+        "target_column": getattr(args, "target_column", None),
+        "target_columns": getattr(args, "target_columns", []),
+        "feature_columns": result["active_cols"],
+        "scaler": result["scaler"],
+        "state_dict": result["model_state_dict"],
+        "metrics": result["metrics"],
+        "trade_exec": result.get("trade_exec"),
+        "logistic_baseline": result.get("logistic_baseline"),
+        "training": {
+            "sequence_len": args.sequence_len,
+            "model": {
+                "hidden": args.tcn_hidden,
+                "layers": args.tcn_layers,
+                "stacks": args.tcn_stacks,
+                "kernel": args.tcn_kernel,
+                "dilation_base": args.tcn_dilation_base,
+                "dropout": args.dropout,
+            },
+            "optimizer": {
+                "learning_rate": args.learning_rate,
+                "weight_decay": args.weight_decay,
+                "patience": args.patience,
+                "min_delta": args.min_delta,
+                "epochs": args.epochs,
+            },
+        },
+        "cli_args": _serialize_args(args),
+    }
+    torch.save(bundle, path)
+    logging.info("Saved model bundle -> %s", path)
+    return path
+
+
 def write_regime_manifest(
     regime_runs: List[Dict[str, Any]], args: argparse.Namespace, output_dir: Path
 ) -> None:
@@ -2612,6 +2662,11 @@ def main() -> None:
         device,
         enable_baseline=True,
     )
+
+    export_dir = Path(args.model_export_dir)
+    save_training_bundle(primary_run, args, export_dir)
+    if baseline_run is not None:
+        save_training_bundle(baseline_run, args, export_dir)
 
     if baseline_run is not None and args.feature_set != "phase4":
         log_phase_comparison(baseline_run, primary_run)

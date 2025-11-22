@@ -16,5 +16,14 @@ arrow-schema = "54.0"
 parquet = { version = "54.0", features = ["arrow"] }
 ordered-float = "4.2"
 
+[features]
+default = []
+realtime = []
+
 [dev-dependencies]
 tempfile = "3.10"
+
+
+[[bin]]
+name = "realtime"
+path = "src/bin/realtime.rs"

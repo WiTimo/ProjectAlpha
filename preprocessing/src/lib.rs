@@ -7,6 +7,7 @@ pub mod domain;
 pub mod io;
 pub mod normalization;
 pub mod pipeline;
+pub mod realtime;
 pub mod utils;
 
 pub use config::PipelineConfig;

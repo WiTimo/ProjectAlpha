@@ -6,5 +6,6 @@ mod labeling;
 pub mod stages;
 
 pub use context::PipelineContext;
+pub use core_features::{CoreFeatureExtractor, CoreFeatureRow, write_core_features_parquet};
 pub use executor::PreprocessingPipeline;
 pub use stages::{BarStage, EventSourceStage, FeatureStage, SinkStage, StageName};
