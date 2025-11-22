@@ -88,12 +88,24 @@ impl PreprocessingPipeline {
                 input_file.display()
             );
 
-            // Process file using streaming approach if batch_size is set
-            if self.config.batch_size > 0 {
-                self.process_file_streaming(input_file)?;
+            // Process file and catch errors to continue with next file
+            let result = if self.config.batch_size > 0 {
+                self.process_file_streaming(input_file)
             } else {
                 // Legacy: load all events into memory at once
-                let events = read_events(input_file, self.config.instrument.levels)?;
+                let events = match read_events(input_file, self.config.instrument.levels) {
+                    Ok(e) => e,
+                    Err(err) => {
+                        eprintln!(
+                            "[{}/{}] ERROR processing {}: {} (skipping)",
+                            idx + 1,
+                            total,
+                            input_file.display(),
+                            err
+                        );
+                        continue;
+                    }
+                };
                 if events.is_empty() {
                     println!(
                         "{} yielded no market events; skipping file",
@@ -103,8 +115,18 @@ impl PreprocessingPipeline {
                 }
 
                 let label_output = derive_output_path(&self.config.io.feature_output_path, input_file);
-                self.run_labeling_for(&events, input_file, &label_output)?;
-                self.run_core_features_for(&events, input_file)?;
+                self.run_labeling_for(&events, input_file, &label_output)
+                    .and_then(|_| self.run_core_features_for(&events, input_file))
+            };
+
+            if let Err(err) = result {
+                eprintln!(
+                    "[{}/{}] ERROR processing {}: {} (skipping)",
+                    idx + 1,
+                    total,
+                    input_file.display(),
+                    err
+                );
             }
         }
 
@@ -304,14 +326,6 @@ impl PreprocessingPipeline {
             // Note: For proper streaming, labeling and feature extraction would need
             // to support append mode. For now, we collect batches and process at end.
             // TODO: Implement true streaming with append-mode Parquet writers
-            
-            println!(
-                "Streaming: {} batch {} processed {} events (total: {})",
-                input_file.display(),
-                batch_count,
-                event_batch.len(),
-                total_events
-            );
         }
 
         if total_events == 0 {
@@ -324,12 +338,6 @@ impl PreprocessingPipeline {
 
         // For now, fall back to full processing if events fit in memory
         // In production, implement incremental Parquet writing
-        println!(
-            "Streaming: {} completed with {} total events in {} batches",
-            input_file.display(),
-            total_events,
-            batch_count
-        );
         
         // Re-read for processing (temporary - TODO: implement true streaming)
         let events = read_events(input_file, self.config.instrument.levels)?;
@@ -447,6 +455,7 @@ fn read_events(path: &Path, levels: usize) -> Result<Vec<MarketEvent>> {
 }
 
 fn collect_input_files(path: &Path) -> Result<Vec<PathBuf>> {
+    // If a single file was provided, keep legacy behavior (allow any extension)
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
     }
@@ -456,18 +465,28 @@ fn collect_input_files(path: &Path) -> Result<Vec<PathBuf>> {
     }
 
     let mut files = Vec::new();
-    let entries = fs::read_dir(path)
-        .with_context(|| format!("Failed to read directory {}", path.display()))?;
-    for entry in entries {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        if file_type.is_file() {
-            files.push(entry.path());
-        }
-    }
-
+    collect_recursive(path, &mut files)?;
     files.sort();
     Ok(files)
+}
+
+fn collect_recursive(dir: &Path, acc: &mut Vec<PathBuf>) -> Result<()> {
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("Failed to read directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_recursive(&path, acc)?;
+        } else if file_type.is_file() {
+            // Only accept .csv files when discovering within directories
+            if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("csv")).unwrap_or(false) {
+                acc.push(path);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn derive_output_path(output_root: &Path, input_file: &Path) -> PathBuf {
@@ -519,7 +538,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn collect_input_files_sorts_and_filters() -> Result<()> {
+    fn collect_input_files_recurses_and_filters() -> Result<()> {
         let tmp = tempdir()?;
         let path_a = tmp.path().join("b.csv");
         let path_b = tmp.path().join("a.csv");
@@ -527,10 +546,11 @@ mod tests {
         File::create(&path_b)?;
         let subdir = tmp.path().join("nested");
         fs::create_dir(&subdir)?;
-        File::create(subdir.join("ignored.csv"))?;
+        let nested_file = subdir.join("ignored.csv");
+        File::create(&nested_file)?;
 
         let files = collect_input_files(tmp.path())?;
-        assert_eq!(files, vec![path_b, path_a]);
+        assert_eq!(files, vec![path_b.clone(), path_a.clone(), nested_file.clone()]);
         Ok(())
     }
 
