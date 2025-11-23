@@ -1,0 +1,100 @@
+instrument:
+  symbol: "NQ"
+  venue: "SIM"
+  tick_size: 0.25
+  levels: 5
+
+io:
+  input_path: "D:/Ninjatrader_Market_Data/csv"
+  feature_output_path: "../data/preprocessed"
+  checkpoint_path: "..data/preprocessed/.checkpoints"
+
+resolutions:
+  - resolution: "fast"
+    bar_seconds: 1
+    aggregate_from: null
+    levels: 5
+    feature_groups:
+      - "top_of_book"
+      - "depth"
+      - "order_flow"
+      - "trades"
+      - "volatility"
+      - "liquidity"
+      - "time_of_day"
+      - "regime"
+      - "cross_resolution"
+      - "meta"
+    persist_raw_bars: false
+  - resolution: "mid"
+    bar_seconds: 10
+    aggregate_from: "fast"
+    levels: 5
+    feature_groups:
+      - "top_of_book"
+      - "depth"
+      - "order_flow"
+      - "trades"
+      - "volatility"
+      - "liquidity"
+      - "time_of_day"
+      - "regime"
+      - "cross_resolution"
+      - "meta"
+    persist_raw_bars: false
+  - resolution: "slow"
+    bar_seconds: 60
+    aggregate_from: "mid"
+    levels: 5
+    feature_groups:
+      - "top_of_book"
+      - "depth"
+      - "order_flow"
+      - "trades"
+      - "volatility"
+      - "liquidity"
+      - "time_of_day"
+      - "regime"
+      - "cross_resolution"
+      - "meta"
+    persist_raw_bars: false
+
+normalization:
+  rolling_depth:
+    window: 600
+    alpha: 0.02
+  rolling_volume:
+    window: 600
+    alpha: 0.02
+  rolling_count:
+    window: 600
+    alpha: 0.02
+  log_epsilon: 1.0e-12
+
+labeling:
+  targets:
+    - name: "t20"
+      up_ticks: 20.0
+      down_ticks: 20.0
+      lookahead_events: 1200
+    - name: "t40"
+      up_ticks: 40.0
+      down_ticks: 40.0
+      lookahead_events: 2400
+    - name: "t60"
+      up_ticks: 60.0
+      down_ticks: 60.0
+      lookahead_events: 3600
+    - name: "t100"
+      up_ticks: 100.0
+      down_ticks: 100.0
+      lookahead_events: 6000
+
+data_split:
+  train_ratio: 0.7
+  validation_ratio: 0.15
+  test_ratio: 0.15
+
+dry_run: false
+skip_existing: true
+batch_size: 35000

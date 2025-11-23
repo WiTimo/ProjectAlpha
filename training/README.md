@@ -1,48 +1,26 @@
-# Phase 1-4 – Python Validation
+# Model Training
 
 # Scope
 
-This directory hosts the lightweight validation pipeline for the Group A (core), Group B (top-of-book
-plus depth), Group C (per-level structure), and Group D (order-flow adds/cancels) feature sets. It loads the Parquet outputs emitted by the Rust preprocessing crate, performs
-the QA checks from `IMPLEMENTATION.md`, standardizes the features using train-only statistics (after a
-train-driven winsorization pass that calms extreme depth spikes), and trains a tiny Temporal Convolutional
-Network (TCN) as a smoke test. Metrics are logged for the validation and test segments so regressions can
-be spotted quickly.
+This directory hosts the main training pipeline. It loads the Parquet outputs emitted by the Rust preprocessing crate, standardizes the features, and trains a Temporal Convolutional
+Network (TCN). Metrics are logged for the validation and test segments.
 
 ## Quick start
 
-```bash
-cd training
-python -m venv .venv
-. .venv/Scripts/activate  # or source .venv/bin/activate on Linux/macOS
-pip install -r requirements.txt
-python phase1_tcn.py --feature-root ../data/preprocessed/training --label-root ../data/preprocessed/training \
-  --resolution fast --limit-files 4 --sequence-len 32 --epochs 5 --split-mode days --val-days 5 --test-days 5
-```
+1.  **Set up the environment:**
+    ```bash
+    npm run packages
+    ```
+2.  **Configure your run:**
+    Open `training/config.yaml` and adjust the parameters for your needs. You can configure paths, data settings, model hyperparameters, and more.
 
-The script accepts several switches:
+3.  **Run the training:**
+    ```bash
+    npm run training
+    ```
+The script will use the settings from `config.yaml` to run the training process.
 
- `--val-days`, `--test-days`: Number of full source days to reserve when `--split-mode=days`. The train/test split is now handled exclusively via these parameters.
 
-When `--enable-regime-training` is set, the script writes one `.pt` bundle per regime and a `manifest.json` that records
-the routing metadata (regime value → bundle filename plus headline metrics). During inference, detect the latest
-`volatility_regime` value, load the matching bundle, standardize with the stored scaler stats, and route the window through
-the corresponding TCN.
-
-### Multi-resolution windows
-
-Supplying `--resolutions fast mid slow` (or any ordered subset) activates the multi-resolution merger baked into the trainer.
-The first entry becomes the base timeline (typically `fast`), while slower bars are joined via `merge_asof` on
-`source_file`/`start_timestamp_ns`, forward-filled within each day, and prefixed (e.g. `mid__spread_ticks`, `slow__rv_log`).
-Feature selection respects the active `--feature-set`, so Phase 4 runs never see Phase 5-only columns even if they exist in
-the Parquets. External test sets automatically receive the same augmentation to guarantee a consistent schema.
-
-Handy npm wrappers are available:
-
-```bash
-npm run training:multi         # dilated TCN on fast+mid+slow inputs
-npm run training:multi:regimes # multi-resolution regime-specific training with bundle export
-```
 
 ## Memory-aware chunk training
 
@@ -60,18 +38,14 @@ entire corpus every epoch saturates even fast SSDs. The updated `training/tcn.py
 - All chunk controls live in `training/config.yaml` under the `chunking` section. Set `chunking.enabled=false` to fall back
   to the legacy mmap-based loader if you have enough RAM or want apples-to-apples benchmarks.
 
-## Phase-5 single-head workflow
+## Training Workflow
 
-- `python training/tcn.py` now defaults to `--primary-only`, so unless you pass `--allow-multi-targets` the run will
-  focus on the main `--target` (t40), matching the review guidance to stabilize the baseline before revisiting other
-  horizons.
-- Default hyperparameters favor a much smaller, better-regularized network (hidden=48, layers=2, dropout=0.3,
-  weight decay=1e-3) plus gradient clipping. This keeps the TCN honest relative to the elastic-net logistic baseline.
-- The logistic-regression reference automatically performs a threshold sweep on the validation split (net ticks by
-  default) and then reports train/val/test trade stats for the selected level, so you can ship a calibrated threshold
-  without a side notebook.
-- `npm run training` wraps the recommended command line (fast+mid+slow inputs, single-head model, logistic sweep) so you
-  can rerun the Phase-5 evaluation with a single shortcut.
+The `tcn.py` script is the main entrypoint for training. All configuration is handled via the `training/config.yaml` file.
+
+- **Target Configuration**: The training target and whether to use multiple targets are configured in the `training` section of the config file.
+- **Hyperparameters**: Model hyperparameters, regularization, and optimizer settings are all defined in `config.yaml`.
+- **Logistic Baseline**: The logistic regression baseline is trained automatically. Its parameters can also be tuned in the config file.
+
 
 ### Splitting strategy
 
@@ -96,4 +70,4 @@ logged so you can confirm whether the removal is expected (e.g., if a particular
 `rv_log`). The logistic-regression baseline still uses elastic-net regularization, making it stable as the feature
 set grows.
 
-All logging is printed to stdout so it can be captured in CI or a notebook. See `phase1_tcn.py --help` for the full list of options.
+All logging is printed to stdout so it can be captured in CI or a notebook. See `tcn.py --help` for the full list of options.

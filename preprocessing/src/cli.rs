@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::config::{PipelineConfig, PipelineOverrides};
-use crate::domain::Resolution;
+use crate::config::PipelineConfig;
 
 /// Command-line interface definition for the preprocessing pipeline.
 #[derive(Debug, Parser)]
@@ -14,75 +13,23 @@ use crate::domain::Resolution;
     about = "Feature engineering pipeline for multi-resolution order-book data."
 )]
 pub struct Cli {
-    /// Optional path to a config file (YAML or JSON). Falls back to a built-in template.
+    /// Optional path to a config file. Defaults to `preprocessing/config.yaml`.
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
-
-    /// Override the raw event input path (file or directory) without editing the config file.
-    #[arg(long, value_name = "PATH")]
-    pub input: Option<PathBuf>,
-
-    /// Override the feature output root (usually a directory) without editing the config file.
-    #[arg(long, value_name = "PATH")]
-    pub output: Option<PathBuf>,
-
-    /// Comma-separated list of resolutions to process (fast,mid,slow). Default = all.
-    #[arg(long, value_delimiter = ',', value_name = "LIST")]
-    pub resolutions: Vec<String>,
-
-    /// Override the instrument tick size (e.g. 0.25 for NQ).
-    #[arg(long, value_name = "FLOAT")]
-    pub tick_size: Option<f64>,
-
-    /// Run the pipeline without writing files. Useful for smoke-testing configuration.
-    #[arg(long)]
-    pub dry_run: bool,
-
-    /// Skip files that have already been preprocessed (all output files exist).
-    #[arg(long)]
-    pub skip_existing: bool,
-
-    /// Maximum events to process in memory at once. Optimized for 16GB RAM (0 = unlimited).
-    #[arg(long, value_name = "SIZE", default_value = "35000")]
-    pub batch_size: usize,
 }
 
 impl Cli {
-    /// Load pipeline configuration and apply CLI overrides.
+    /// Load pipeline configuration.
     pub fn build_config(&self) -> Result<PipelineConfig> {
-        let mut cfg = if let Some(path) = &self.config {
-            PipelineConfig::from_path(path)
-                .with_context(|| format!("Failed to load config from {}", path.display()))?
-        } else {
-            PipelineConfig::example()
-        };
+        let config_path = self
+            .config
+            .clone()
+            .unwrap_or_else(|| "config.yaml".into());
 
-        let overrides = PipelineOverrides {
-            input_path: self.input.clone(),
-            output_path: self.output.clone(),
-            resolutions: self.parse_resolutions()?,
-            tick_size: self.tick_size,
-            dry_run: Some(self.dry_run),
-            skip_existing: Some(self.skip_existing),
-            batch_size: Some(self.batch_size),
-        };
+        let cfg = PipelineConfig::from_path(&config_path)
+            .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
 
-        cfg.apply_overrides(overrides);
         cfg.validate()?;
         Ok(cfg)
-    }
-
-    fn parse_resolutions(&self) -> Result<Option<Vec<Resolution>>> {
-        if self.resolutions.is_empty() {
-            return Ok(None);
-        }
-
-        let resolutions = self
-            .resolutions
-            .iter()
-            .map(|raw| Resolution::try_from(raw.as_str()))
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(Some(resolutions))
     }
 }

@@ -1,8 +1,8 @@
 # TCN Training Configuration
 
 paths:
-  feature_root: "data/partially"
-  label_root: "data/partially"
+  feature_root: "data/preprocessed"
+  label_root: "data/preprocessed"
   cache_dir: "runs/cache"
   model_export_dir: "runs/models"
   checkpoint_dir: "runs/checkpoints"
@@ -11,10 +11,10 @@ data:
   resolutions: ["fast", "mid", "slow"]
   feature_set: "phase5"
   # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
-  limit_files: 0
+  limit_files: 25
   # Splits
   val_days: 2
-  test_days: 2
+  test_days: 4
   
 training:
   target: "t40" # Primary target horizon

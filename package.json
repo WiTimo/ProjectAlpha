@@ -1,10 +1,10 @@
 {
   "name": "project-alpha",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Helper npm scripts for running preprocessing and training tasks",
   "scripts": {
-    "preprocessing": "cd preprocessing && cargo run --bin preprocessing -- --input \"D:/Ninjatrader_Market_Data/csv\" --output \"../data/preprocessed\" --resolutions fast,mid,slow --skip-existing",
+    "preprocessing": "cd preprocessing && cargo run --bin preprocessing",
     "parquet": "python preprocessing/test/describe_parquet.py --input data/partially/fast/20241002.parquet --output preprocessing/test/parquet-output.txt && python preprocessing/test/describe_parquet.py --input data/partially/20241002.parquet --output preprocessing/test/parquet-labels-output.txt",
     "packages": "python -m pip install -r training/requirements.txt && python -m pip install -r deployment/requirements.txt",
     "training": "python training/tcn.py"

@@ -70,55 +70,11 @@ impl PipelineConfig {
         }
     }
 
-    /// Apply runtime overrides without mutating on-disk configuration files.
-    pub fn apply_overrides(&mut self, overrides: PipelineOverrides) {
-        if let Some(input) = overrides.input_path {
-            self.io.input_path = input;
-        }
-
-        if let Some(output) = overrides.output_path {
-            self.io.feature_output_path = output;
-        }
-
-        if let Some(filter) = overrides.resolutions {
-            self.resolutions
-                .retain(|cfg| filter.contains(&cfg.resolution));
-        }
-
-        if let Some(tick) = overrides.tick_size {
-            self.instrument.tick_size = tick.max(1e-12);
-        }
-
-        if let Some(dry_run) = overrides.dry_run {
-            self.dry_run = dry_run;
-        }
-
-        if let Some(skip_existing) = overrides.skip_existing {
-            self.skip_existing = skip_existing;
-        }
-
-        if let Some(batch_size) = overrides.batch_size {
-            self.batch_size = batch_size;
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         self.data_split.validate()?;
         self.labeling.validate()?;
         Ok(())
     }
-}
-
-/// In-memory overrides derived from CLI flags.
-#[derive(Debug, Default, Clone)]
-pub struct PipelineOverrides {
-    pub input_path: Option<PathBuf>,
-    pub output_path: Option<PathBuf>,
-    pub resolutions: Option<Vec<Resolution>>,
-    pub tick_size: Option<f64>,
-    pub dry_run: Option<bool>,
-    pub skip_existing: Option<bool>,
-    pub batch_size: Option<usize>,
 }
 
 /// Static instrument metadata that feeds normalization logic (tick size etc.).
