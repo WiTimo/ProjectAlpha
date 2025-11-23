@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 use std::f64::consts::TAU;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arrow_array::{ArrayRef, Float64Array, Int64Array, RecordBatch};
@@ -11,7 +13,7 @@ use parquet::file::properties::WriterProperties;
 
 use crate::config::NormalizationConfig;
 use crate::domain::{Bar, BarKey, BookLevel, OrderBookSnapshot};
-use crate::normalization::CausalScaler;
+use crate::normalization::{CausalScaler, CausalScalerState};
 use crate::utils::math::signed_log1p;
 use time::OffsetDateTime;
 
@@ -42,17 +44,39 @@ pub struct CoreFeatureExtractor {
 
 impl CoreFeatureExtractor {
     pub fn new(tick_size: f64, norm_cfg: &NormalizationConfig) -> Self {
-        Self::with_window(tick_size, norm_cfg, DEFAULT_RV_WINDOW)
+        Self::with_window_and_state(tick_size, norm_cfg, DEFAULT_RV_WINDOW, None)
     }
 
     pub fn with_window(tick_size: f64, norm_cfg: &NormalizationConfig, rv_window: usize) -> Self {
-        Self {
+        Self::with_window_and_state(tick_size, norm_cfg, rv_window, None)
+    }
+
+    pub fn with_state(
+        tick_size: f64,
+        norm_cfg: &NormalizationConfig,
+        scaler_state: &CausalScalerState,
+    ) -> Self {
+        Self::with_window_and_state(tick_size, norm_cfg, DEFAULT_RV_WINDOW, Some(scaler_state))
+    }
+
+    pub fn with_window_and_state(
+        tick_size: f64,
+        norm_cfg: &NormalizationConfig,
+        rv_window: usize,
+        scaler_state: Option<&CausalScalerState>,
+    ) -> Self {
+        let extractor = Self {
             tick_size: tick_size.max(1e-12),
             epsilon: norm_cfg.log_epsilon.max(1e-12),
-            scaler: CausalScaler::new(norm_cfg),
+            scaler: CausalScaler::with_state(norm_cfg, scaler_state),
             rv: RollingVariance::new(rv_window.max(1)),
             rv_min_window: RV_MIN_OBSERVATIONS,
-        }
+        };
+        extractor
+    }
+
+    pub fn scaler_state(&self) -> CausalScalerState {
+        self.scaler.snapshot()
     }
 
     pub fn compute(&mut self, bars: &[Bar]) -> Vec<CoreFeatureRow> {
@@ -488,12 +512,82 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     if rows.is_empty() {
         return Ok(());
     }
+    let mut writer = CoreFeatureWriter::create_file(path, rows.len())?;
+    writer.append_rows(rows.iter().cloned())?;
+    writer.finish()
+}
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directories for {}", parent.display()))?;
+pub const DEFAULT_FEATURE_FLUSH_ROWS: usize = 2048;
+
+pub struct CoreFeatureWriter<W: Write + Send> {
+    writer: ArrowWriter<W>,
+    schema: Arc<Schema>,
+    buffer: Vec<CoreFeatureRow>,
+    flush_every: usize,
+}
+
+impl<W: Write + Send> CoreFeatureWriter<W> {
+    pub fn try_new(writer: W, flush_every: usize) -> Result<Self> {
+        let schema = core_feature_schema();
+        let props = WriterProperties::builder().build();
+        let arrow_writer = ArrowWriter::try_new(writer, schema.clone(), Some(props))?;
+        let capacity = flush_every.max(1);
+        Ok(Self {
+            writer: arrow_writer,
+            schema,
+            buffer: Vec::with_capacity(capacity),
+            flush_every: capacity,
+        })
     }
 
+    pub fn append_rows<I>(&mut self, rows: I) -> Result<()>
+    where
+        I: IntoIterator<Item = CoreFeatureRow>,
+    {
+        for row in rows {
+            self.buffer.push(row);
+            if self.buffer.len() >= self.flush_every {
+                self.flush_buffer()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_buffer(&mut self) -> Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let batch = record_batch_from_rows(&self.schema, &self.buffer)?;
+        self.writer.write(&batch)?;
+        self.buffer.clear();
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.flush_buffer()?;
+        self.writer.close()?;
+        Ok(())
+    }
+}
+
+impl CoreFeatureWriter<fs::File> {
+    pub fn create_file(path: &Path, flush_every: usize) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create directories for {}", parent.display())
+            })?;
+        }
+        let file = fs::File::create(path)
+            .with_context(|| format!("Failed to create output file {}", path.display()))?;
+        Self::try_new(file, flush_every.max(1))
+    }
+}
+
+fn core_feature_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(build_core_feature_fields()))
+}
+
+fn build_core_feature_fields() -> Vec<Field> {
     let mut fields = vec![
         Field::new("bar_index", DataType::Int64, false),
         Field::new("start_timestamp_ns", DataType::Int64, false),
@@ -578,9 +672,16 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
             false,
         ));
     }
-    let schema = Schema::new(fields);
-    let schema = std::sync::Arc::new(schema);
+    fields
+}
 
+fn record_batch_from_rows(schema: &Arc<Schema>, rows: &[CoreFeatureRow]) -> Result<RecordBatch> {
+    let columns = build_columns(rows);
+    let batch = RecordBatch::try_new(schema.clone(), columns)?;
+    Ok(batch)
+}
+
+fn build_columns(rows: &[CoreFeatureRow]) -> Vec<ArrayRef> {
     let bar_index = Int64Array::from_iter_values(rows.iter().map(|r| r.key.index));
     let start_ns = Int64Array::from_iter_values(rows.iter().map(|r| r.start_ns));
     let end_ns = Int64Array::from_iter_values(rows.iter().map(|r| r.end_ns));
@@ -620,7 +721,6 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     let volatility_regime =
         Float64Array::from_iter_values(rows.iter().map(|r| r.volatility_regime));
     let speed_regime = Float64Array::from_iter_values(rows.iter().map(|r| r.speed_regime));
-
     let limit_add_bid =
         Float64Array::from_iter_values(rows.iter().map(|r| r.limit_add_bid_volume_rel));
     let limit_add_ask =
@@ -636,83 +736,76 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     let ofi_net_log = Float64Array::from_iter_values(rows.iter().map(|r| r.ofi_net_log));
 
     let mut columns: Vec<ArrayRef> = vec![
-        std::sync::Arc::new(bar_index) as ArrayRef,
-        std::sync::Arc::new(start_ns),
-        std::sync::Arc::new(end_ns),
-        std::sync::Arc::new(mid_close_price),
-        std::sync::Arc::new(mid_high_price),
-        std::sync::Arc::new(mid_low_price),
-        std::sync::Arc::new(mid_return),
-        std::sync::Arc::new(spread_ticks),
-        std::sync::Arc::new(spread_change_ticks),
-        std::sync::Arc::new(mid_range_rel),
-        std::sync::Arc::new(imbalance),
-        std::sync::Arc::new(cum_bid_rel),
-        std::sync::Arc::new(cum_ask_rel),
-        std::sync::Arc::new(imbalance_l),
-        std::sync::Arc::new(volume_rel),
-        std::sync::Arc::new(trade_count_log),
-        std::sync::Arc::new(buy_trade_volume_rel),
-        std::sync::Arc::new(sell_trade_volume_rel),
-        std::sync::Arc::new(trade_imbalance_ratio),
-        std::sync::Arc::new(has_buy_trade),
-        std::sync::Arc::new(has_sell_trade),
-        std::sync::Arc::new(avg_buy_dist_to_ask),
-        std::sync::Arc::new(avg_sell_dist_to_bid),
-        std::sync::Arc::new(rv_log),
-        std::sync::Arc::new(tod_sin),
-        std::sync::Arc::new(tod_cos),
-        std::sync::Arc::new(is_us_session),
-        std::sync::Arc::new(spread_regime),
-        std::sync::Arc::new(depth_regime),
-        std::sync::Arc::new(volume_regime),
-        std::sync::Arc::new(volatility_regime),
-        std::sync::Arc::new(speed_regime),
-        std::sync::Arc::new(limit_add_bid),
-        std::sync::Arc::new(limit_add_ask),
-        std::sync::Arc::new(limit_cancel_bid),
-        std::sync::Arc::new(limit_cancel_ask),
-        std::sync::Arc::new(limit_of_imbalance),
-        std::sync::Arc::new(ofi_bid),
-        std::sync::Arc::new(ofi_ask),
-        std::sync::Arc::new(ofi_net_log),
+        Arc::new(bar_index) as ArrayRef,
+        Arc::new(start_ns),
+        Arc::new(end_ns),
+        Arc::new(mid_close_price),
+        Arc::new(mid_high_price),
+        Arc::new(mid_low_price),
+        Arc::new(mid_return),
+        Arc::new(spread_ticks),
+        Arc::new(spread_change_ticks),
+        Arc::new(mid_range_rel),
+        Arc::new(imbalance),
+        Arc::new(cum_bid_rel),
+        Arc::new(cum_ask_rel),
+        Arc::new(imbalance_l),
+        Arc::new(volume_rel),
+        Arc::new(trade_count_log),
+        Arc::new(buy_trade_volume_rel),
+        Arc::new(sell_trade_volume_rel),
+        Arc::new(trade_imbalance_ratio),
+        Arc::new(has_buy_trade),
+        Arc::new(has_sell_trade),
+        Arc::new(avg_buy_dist_to_ask),
+        Arc::new(avg_sell_dist_to_bid),
+        Arc::new(rv_log),
+        Arc::new(tod_sin),
+        Arc::new(tod_cos),
+        Arc::new(is_us_session),
+        Arc::new(spread_regime),
+        Arc::new(depth_regime),
+        Arc::new(volume_regime),
+        Arc::new(volatility_regime),
+        Arc::new(speed_regime),
+        Arc::new(limit_add_bid),
+        Arc::new(limit_add_ask),
+        Arc::new(limit_cancel_bid),
+        Arc::new(limit_cancel_ask),
+        Arc::new(limit_of_imbalance),
+        Arc::new(ofi_bid),
+        Arc::new(ofi_ask),
+        Arc::new(ofi_net_log),
     ];
+
     for level in 0..LEVEL_FEATURE_COUNT {
         let arr =
             Float64Array::from_iter_values(rows.iter().map(|r| r.bid_offset_level_ticks[level]));
-        columns.push(std::sync::Arc::new(arr));
+        columns.push(Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
         let arr =
             Float64Array::from_iter_values(rows.iter().map(|r| r.ask_offset_level_ticks[level]));
-        columns.push(std::sync::Arc::new(arr));
+        columns.push(Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
         let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.bid_size_level_rel[level]));
-        columns.push(std::sync::Arc::new(arr));
+        columns.push(Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
         let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.ask_size_level_rel[level]));
-        columns.push(std::sync::Arc::new(arr));
+        columns.push(Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
         let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.bid_level_present[level]));
-        columns.push(std::sync::Arc::new(arr));
+        columns.push(Arc::new(arr));
     }
     for level in 0..LEVEL_FEATURE_COUNT {
         let arr = Float64Array::from_iter_values(rows.iter().map(|r| r.ask_level_present[level]));
-        columns.push(std::sync::Arc::new(arr));
+        columns.push(Arc::new(arr));
     }
 
-    let batch = RecordBatch::try_new(schema.clone(), columns)?;
-
-    let file = fs::File::create(path)
-        .with_context(|| format!("Failed to create output file {}", path.display()))?;
-    let props = WriterProperties::builder().build();
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
-    writer.write(&batch)?;
-    writer.close()?;
-    Ok(())
+    columns
 }
 
 fn compute_imbalance(bar: &Bar, epsilon: f64) -> f64 {

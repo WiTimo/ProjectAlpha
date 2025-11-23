@@ -25,50 +25,64 @@ NUM_TARGET_CLASSES = 3
 
 
 def load_model(bundle_path: Path) -> Dict[str, Any]:
-    bundle = torch.load(bundle_path, map_location="cpu")
-    model_state = bundle.get("model_state_dict") or bundle.get("state_dict")
-    if model_state is None:
-        raise KeyError(
-            "Model bundle missing 'model_state_dict'/'state_dict'. Re-export training bundle."
+    import joblib
+    if str(bundle_path).endswith(".pkl"):
+        bundle = joblib.load(bundle_path)
+        model = bundle["model"]
+        feature_columns = bundle.get("feature_columns", [])
+        threshold = bundle.get("threshold", 0.5)
+        return {
+            "model": model,
+            "feature_columns": feature_columns,
+            "threshold": threshold,
+            "type": "logistic_regression",
+        }
+    else:
+        bundle = torch.load(bundle_path, map_location="cpu")
+        model_state = bundle.get("model_state_dict") or bundle.get("state_dict")
+        if model_state is None:
+            raise KeyError(
+                "Model bundle missing 'model_state_dict'/'state_dict'. Re-export training bundle."
+            )
+        scaler = bundle.get("scaler", {})
+        feature_columns = bundle.get("feature_columns", [])
+        if not feature_columns:
+            raise KeyError(
+                "Model bundle missing feature column metadata; re-export the training bundle."
+            )
+        target_columns = bundle.get("target_columns") or (
+            [bundle.get("target_column")] if bundle.get("target_column") else []
         )
-    scaler = bundle.get("scaler", {})
-    feature_columns = bundle.get("feature_columns", [])
-    if not feature_columns:
-        raise KeyError(
-            "Model bundle missing feature column metadata; re-export the training bundle."
+        num_targets = max(1, len(target_columns) or 1)
+
+        from training.tcn_deprecated import DilatedTCN
+
+        training_cfg = bundle.get("training", {})
+        model_cfg = dict(training_cfg.get("model", {}))
+        model_cfg.setdefault("output_dim", num_targets * NUM_TARGET_CLASSES)
+        sequence_len = max(1, int(training_cfg.get("sequence_len") or 1))
+        model = DilatedTCN(num_features=len(feature_columns), **model_cfg)
+        model.load_state_dict(model_state)
+        model.eval()
+
+        means = np.array(
+            [scaler.get("means", {}).get(col, 0.0) for col in feature_columns], dtype=np.float32
         )
-    target_columns = bundle.get("target_columns") or (
-        [bundle.get("target_column")] if bundle.get("target_column") else []
-    )
-    num_targets = max(1, len(target_columns) or 1)
+        stds = np.array(
+            [scaler.get("stds", {}).get(col, 1.0) for col in feature_columns], dtype=np.float32
+        )
+        stds = np.where(stds == 0, 1.0, stds)
 
-    from training.tcn import DilatedTCN
-
-    training_cfg = bundle.get("training", {})
-    model_cfg = dict(training_cfg.get("model", {}))
-    model_cfg.setdefault("output_dim", num_targets * NUM_TARGET_CLASSES)
-    sequence_len = max(1, int(training_cfg.get("sequence_len") or 1))
-    model = DilatedTCN(num_features=len(feature_columns), **model_cfg)
-    model.load_state_dict(model_state)
-    model.eval()
-
-    means = np.array(
-        [scaler.get("means", {}).get(col, 0.0) for col in feature_columns], dtype=np.float32
-    )
-    stds = np.array(
-        [scaler.get("stds", {}).get(col, 1.0) for col in feature_columns], dtype=np.float32
-    )
-    stds = np.where(stds == 0, 1.0, stds)
-
-    return {
-        "model": model,
-        "feature_columns": feature_columns,
-        "target_columns": target_columns,
-        "means": means,
-        "stds": stds,
-        "sequence_len": sequence_len,
-        "num_targets": num_targets,
-    }
+        return {
+            "model": model,
+            "feature_columns": feature_columns,
+            "target_columns": target_columns,
+            "means": means,
+            "stds": stds,
+            "sequence_len": sequence_len,
+            "num_targets": num_targets,
+            "type": "tcn",
+        }
 
 
 def standardize(features: Dict[str, float], feature_columns: Iterable[str], means, stds) -> np.ndarray:
@@ -178,11 +192,11 @@ def parse_feature_line(
         return None, "non-json"
 
     resolution = str(payload.get("resolution", "")).lower()
-    if expected_resolution and resolution != expected_resolution:
+    # Require all three resolutions to be present in the stream
+    if resolution not in ["fast", "mid", "slow"]:
         logging.debug(
-            "Dropping row due to resolution mismatch (got=%s expected=%s)",
+            "Dropping row due to invalid resolution (got=%s)",
             resolution,
-            expected_resolution,
         )
         return None, "resolution-mismatch"
 
@@ -196,6 +210,42 @@ def parse_feature_line(
 
 def inference_loop(args: argparse.Namespace) -> None:
     bundle = load_model(Path(args.model_bundle))
+    model_type = bundle.get("type", "tcn")
+    features_path = Path(args.features)
+    tail = FeatureTail(features_path, start_at_end=not args.replay_existing)
+    logging.info("Watching %s for feature rows", features_path)
+    last_idle_log = time.time()
+
+    if model_type == "logistic_regression":
+        model = bundle["model"]
+        feature_columns = bundle["feature_columns"]
+        threshold = bundle["threshold"]
+        try:
+            while True:
+                lines = tail.read_new_lines()
+                if not lines:
+                    now = time.time()
+                    if now - last_idle_log >= args.idle_log_seconds:
+                        logging.debug("Idle %.1fs", now - last_idle_log)
+                        last_idle_log = now
+                    time.sleep(args.poll_interval)
+                    continue
+                for line in lines:
+                    parsed, drop_reason = parse_feature_line(line, args.resolution)
+                    if not parsed:
+                        continue
+                    payload = parsed
+                    vector = np.array([payload["features"].get(col, 0.0) for col in feature_columns], dtype=np.float32)
+                    prob = model.predict_proba(vector.reshape(1, -1))[0, 1]
+                    logging.info(f"LogisticRegression: up={prob:.3f} (threshold={threshold:.3f})")
+                    # Add hotkey logic if needed
+        except KeyboardInterrupt:
+            logging.info("Stopping realtime inference")
+        finally:
+            tail.close()
+        return
+
+    # TCN logic (unchanged)
     model = bundle["model"]
     feature_columns = bundle["feature_columns"]
     means = bundle["means"]
@@ -233,11 +283,6 @@ def inference_loop(args: argparse.Namespace) -> None:
         sequence_len,
         ", ".join(target_columns) or "n/a",
     )
-
-    features_path = Path(args.features)
-    tail = FeatureTail(features_path, start_at_end=not args.replay_existing)
-    logging.info("Watching %s for feature rows", features_path)
-    last_idle_log = time.time()
 
     try:
         while True:
@@ -353,10 +398,11 @@ def parse_args() -> argparse.Namespace:
         help="Verbosity for stdout logging",
     )
     parser.add_argument(
-        "--resolution",
+        "--resolutions",
         type=str,
-        default="fast",
-        help="Filter incoming rows to the expected resolution (fast/mid/slow)",
+        nargs="+",
+        default=["fast", "mid", "slow"],
+        help="List of resolutions to require in the feature stream. Must be: fast mid slow.",
     )
     parser.add_argument(
         "--idle-log-seconds",

@@ -1,61 +1,61 @@
 === BASIC DATASET INFO ===
-Rows:    35,890
+Rows:    74,275
 Columns: 58
 
 === COLUMN OVERVIEW ===
 Name                           Dtype                  Nulls    Null%       Unique
-bar_index                      int64                      0    0.00%       35,890
-start_timestamp_ns             int64                      0    0.00%       35,890
-end_timestamp_ns               int64                      0    0.00%       35,890
-mid_close_price                float64                    0    0.00%          967
-mid_high_price                 float64                    0    0.00%          977
-mid_low_price                  float64                    0    0.00%          981
-mid_return_bar                 float64                    0    0.00%        8,560
-spread_ticks                   float64                    0    0.00%           35
-spread_change_ticks            float64                    0    0.00%           31
-mid_range_rel                  float64                    0    0.00%        7,314
-imbalance_best                 float64                    0    0.00%           23
-cum_bid_size_l_rel             float64                    0    0.00%       35,890
-cum_ask_size_l_rel             float64                    0    0.00%       35,890
-imbalance_l                    float64                    0    0.00%          332
-trade_volume_sum_rel           float64                    0    0.00%       27,998
-trade_count_log                float64                    0    0.00%           59
-buy_trade_volume_rel           float64                    0    0.00%       24,390
-sell_trade_volume_rel          float64                    0    0.00%       23,918
-trade_imbalance_ratio          float64                    0    0.00%          602
+bar_index                      int64                      0    0.00%       74,275
+start_timestamp_ns             int64                      0    0.00%       74,275
+end_timestamp_ns               int64                      0    0.00%       74,275
+mid_close_price                float64                    0    0.00%        1,880
+mid_high_price                 float64                    0    0.00%        1,884
+mid_low_price                  float64                    0    0.00%        1,886
+mid_return_bar                 float64                    0    0.00%       25,821
+spread_ticks                   float64                    0    0.00%           14
+spread_change_ticks            float64                    0    0.00%           22
+mid_range_rel                  float64                    0    0.00%       23,505
+imbalance_best                 float64                    0    0.00%          205
+cum_bid_size_l_rel             float64                    0    0.00%       74,275
+cum_ask_size_l_rel             float64                    0    0.00%       74,271
+imbalance_l                    float64                    0    0.00%        1,779
+trade_volume_sum_rel           float64                    0    0.00%       72,098
+trade_count_log                float64                    0    0.00%          997
+buy_trade_volume_rel           float64                    0    0.00%       69,284
+sell_trade_volume_rel          float64                    0    0.00%       69,503
+trade_imbalance_ratio          float64                    0    0.00%       28,345
 has_buy_trade                  float64                    0    0.00%            2
 has_sell_trade                 float64                    0    0.00%            2
-avg_buy_dist_to_ask            float64                    0    0.00%          955
-avg_sell_dist_to_bid           float64                    0    0.00%          997
-rv_log                         float64                    0    0.00%       26,043
-tod_sin                        float64                    0    0.00%       24,163
-tod_cos                        float64                    0    0.00%       24,334
+avg_buy_dist_to_ask            float64                    0    0.00%       10,703
+avg_sell_dist_to_bid           float64                    0    0.00%       11,013
+rv_log                         float64                    0    0.00%       69,387
+tod_sin                        float64                    0    0.00%       34,102
+tod_cos                        float64                    0    0.00%       34,344
 is_us_session                  float64                    0    0.00%            2
-spread_regime                  float64                    0    0.00%            3
+spread_regime                  float64                    0    0.00%            1
 depth_regime                   float64                    0    0.00%            3
 volume_regime                  float64                    0    0.00%            3
-volatility_regime              float64                    0    0.00%            3
+volatility_regime              float64                    0    0.00%            1
 speed_regime                   float64                    0    0.00%            3
-limit_add_bid_volume_rel       float64                    0    0.00%       29,062
-limit_add_ask_volume_rel       float64                    0    0.00%       29,611
-limit_cancel_bid_volume_rel    float64                    0    0.00%       25,856
-limit_cancel_ask_volume_rel    float64                    0    0.00%       26,396
-limit_of_imbalance             float64                    0    0.00%          619
-ofi_bid                        float64                    0    0.00%       16,289
-ofi_ask                        float64                    0    0.00%       17,367
-ofi_net_log                    float64                    0    0.00%       21,103
-bid_offset_level_1_ticks       float64                    0    0.00%           35
-bid_offset_level_2_ticks       float64                    0    0.00%           60
-bid_offset_level_3_ticks       float64                    0    0.00%           85
-ask_offset_level_1_ticks       float64                    0    0.00%           35
-ask_offset_level_2_ticks       float64                    0    0.00%           56
-ask_offset_level_3_ticks       float64                    0    0.00%           65
-bid_size_level_1_rel           float64                    0    0.00%       35,890
-bid_size_level_2_rel           float64                    0    0.00%       14,149
-bid_size_level_3_rel           float64                    0    0.00%       27,525
-ask_size_level_1_rel           float64                    0    0.00%       35,890
-ask_size_level_2_rel           float64                    0    0.00%       22,150
-ask_size_level_3_rel           float64                    0    0.00%        9,259
+limit_add_bid_volume_rel       float64                    0    0.00%       69,543
+limit_add_ask_volume_rel       float64                    0    0.00%       69,806
+limit_cancel_bid_volume_rel    float64                    0    0.00%       69,434
+limit_cancel_ask_volume_rel    float64                    0    0.00%       69,722
+limit_of_imbalance             float64                    0    0.00%        9,417
+ofi_bid                        float64                    0    0.00%       59,714
+ofi_ask                        float64                    0    0.00%       60,070
+ofi_net_log                    float64                    0    0.00%       65,276
+bid_offset_level_1_ticks       float64                    0    0.00%           14
+bid_offset_level_2_ticks       float64                    0    0.00%           35
+bid_offset_level_3_ticks       float64                    0    0.00%           39
+ask_offset_level_1_ticks       float64                    0    0.00%           14
+ask_offset_level_2_ticks       float64                    0    0.00%           38
+ask_offset_level_3_ticks       float64                    0    0.00%           41
+bid_size_level_1_rel           float64                    0    0.00%       74,275
+bid_size_level_2_rel           float64                    0    0.00%       72,507
+bid_size_level_3_rel           float64                    0    0.00%       73,497
+ask_size_level_1_rel           float64                    0    0.00%       74,271
+ask_size_level_2_rel           float64                    0    0.00%       72,716
+ask_size_level_3_rel           float64                    0    0.00%       73,666
 bid_level_1_present            float64                    0    0.00%            1
 bid_level_2_present            float64                    0    0.00%            2
 bid_level_3_present            float64                    0    0.00%            2
@@ -67,361 +67,361 @@ ask_level_3_present            float64                    0    0.00%            
 
 --- Column: bar_index ---
 Dtype: int64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          39,347.7
-  Std dev:       19,562.9
+Unique non-null values: 74,275
+  Non-null count: 74,275.0
+  Mean:          41,652.3
+  Std dev:       24,465.4
    min:          0
-   1  :          1,573.23
-   5  :          7,928.45
-   25 :          26,402.2
-   50 :          39,516.5
-   75 :          51,020.2
-   95 :          76,945.5
-   99 :          84,339.1
-   max:          86,390
+   1  :          1,231.74
+   5  :          4,865.7
+   25 :          21,132.5
+   50 :          40,395
+   75 :          59,091.5
+   95 :          82,038.3
+   99 :          85,523.3
+   max:          86,399
 
 --- Column: start_timestamp_ns ---
 Dtype: int64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          1,703,004,947,732,683,520
-  Std dev:       1.95629e+13
-   min:          1,702,965,600,000,000,000
-   1  :          1,702,967,173,229,999,872
-   5  :          1,702,973,528,450,000,128
-   25 :          1,702,992,002,249,999,872
-   50 :          1,703,005,116,500,000,000
-   75 :          1,703,016,620,249,999,872
-   95 :          1,703,042,545,549,999,872
-   99 :          1,703,049,939,110,000,128
-   max:          1,703,051,990,000,000,000
+Unique non-null values: 74,275
+  Non-null count: 74,275.0
+  Mean:          1,727,890,452,279,138,560
+  Std dev:       2.44654e+13
+   min:          1,727,848,800,000,000,000
+   1  :          1,727,850,031,740,000,000
+   5  :          1,727,853,665,700,000,000
+   25 :          1,727,869,932,500,000,000
+   50 :          1,727,889,195,000,000,000
+   75 :          1,727,907,891,500,000,000
+   95 :          1,727,930,838,300,000,000
+   99 :          1,727,934,323,260,000,000
+   max:          1,727,935,199,000,000,000
 
 --- Column: end_timestamp_ns ---
 Dtype: int64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          1,703,004,948,732,683,264
-  Std dev:       1.95629e+13
-   min:          1,702,965,601,000,000,000
-   1  :          1,702,967,174,229,999,872
-   5  :          1,702,973,529,450,000,128
-   25 :          1,702,992,003,249,999,872
-   50 :          1,703,005,117,500,000,000
-   75 :          1,703,016,621,249,999,872
-   95 :          1,703,042,546,549,999,872
-   99 :          1,703,049,940,110,000,128
-   max:          1,703,051,991,000,000,000
+Unique non-null values: 74,275
+  Non-null count: 74,275.0
+  Mean:          1,727,890,453,279,138,560
+  Std dev:       2.44654e+13
+   min:          1,727,848,801,000,000,000
+   1  :          1,727,850,032,740,000,000
+   5  :          1,727,853,666,700,000,000
+   25 :          1,727,869,933,500,000,000
+   50 :          1,727,889,196,000,000,000
+   75 :          1,727,907,892,500,000,000
+   95 :          1,727,930,839,300,000,000
+   99 :          1,727,934,324,260,000,000
+   max:          1,727,935,200,000,000,000
 
 --- Column: mid_close_price ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 967
-  Non-null count: 35,890.0
-  Mean:          17,192.9
-  Std dev:       31.7674
-   min:          17,130.5
-   1  :          17,134.4
-   5  :          17,140.8
-   25 :          17,168.9
-   50 :          17,196.5
-   75 :          17,212.6
-   95 :          17,248.6
-   99 :          17,256.4
-   max:          17,258.5
+Unique non-null values: 1,880
+  Non-null count: 74,275.0
+  Mean:          19,980.9
+  Std dev:       51.1063
+   min:          19,834.4
+   1  :          19,886.2
+   5  :          19,903.6
+   25 :          19,940.9
+   50 :          19,971.6
+   75 :          20,029
+   95 :          20,059.2
+   99 :          20,074.2
+   max:          20,088.5
 
 --- Column: mid_high_price ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 977
-  Non-null count: 35,890.0
-  Mean:          17,193.1
-  Std dev:       31.7668
-   min:          17,130.5
-   1  :          17,134.6
-   5  :          17,141
-   25 :          17,169
-   50 :          17,196.8
-   75 :          17,212.8
-   95 :          17,248.8
-   99 :          17,256.4
-   max:          17,258.6
+Unique non-null values: 1,884
+  Non-null count: 74,275.0
+  Mean:          19,981.3
+  Std dev:       51.1137
+   min:          19,837.1
+   1  :          19,886.5
+   5  :          19,904
+   25 :          19,941.2
+   50 :          19,972
+   75 :          20,029.5
+   95 :          20,059.8
+   99 :          20,074.8
+   max:          20,089.5
 
 --- Column: mid_low_price ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 981
-  Non-null count: 35,890.0
-  Mean:          17,192.8
-  Std dev:       31.774
-   min:          17,130.2
-   1  :          17,134.1
-   5  :          17,140.8
-   25 :          17,168.8
-   50 :          17,196.1
-   75 :          17,212.4
-   95 :          17,248.5
-   99 :          17,256.3
-   max:          17,258.5
+Unique non-null values: 1,886
+  Non-null count: 74,275.0
+  Mean:          19,980.4
+  Std dev:       51.1012
+   min:          19,833.6
+   1  :          19,885.8
+   5  :          19,903.4
+   25 :          19,940.6
+   50 :          19,971.4
+   75 :          20,028.5
+   95 :          20,058.9
+   99 :          20,073.8
+   max:          20,087.6
 
 --- Column: mid_return_bar ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 8,560
-  Non-null count: 35,890.0
-  Mean:          1.49467e-06
-  Std dev:       2.62909e-05
-   min:          -0.000392482
-   1  :          -7.99421e-05
-   5  :          -3.64519e-05
-   25 :          0
+Unique non-null values: 25,821
+  Non-null count: 74,275.0
+  Mean:          -1.3505e-07
+  Std dev:       4.11633e-05
+   min:          -0.000785149
+   1  :          -0.000125476
+   5  :          -6.26156e-05
+   25 :          -1.25241e-05
    50 :          0
-   75 :          7.27043e-06
-   95 :          4.36023e-05
-   99 :          7.98519e-05
-   max:          0.000320063
+   75 :          1.25307e-05
+   95 :          6.25044e-05
+   99 :          0.000118971
+   max:          0.000508613
 
 --- Column: spread_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35
-  Non-null count: 35,890.0
-  Mean:          11.6379
-  Std dev:       2.6818
-   min:          1
-   1  :          8
-   5  :          8
-   25 :          10
-   50 :          11
-   75 :          14
-   95 :          16
-   99 :          18
-   max:          51
+Unique non-null values: 14
+  Non-null count: 74,275.0
+  Mean:          3.652
+  Std dev:       1.68182
+   min:          0
+   1  :          1
+   5  :          2
+   25 :          2
+   50 :          3
+   75 :          5
+   95 :          6
+   99 :          7
+   max:          13
 
 --- Column: spread_change_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 31
-  Non-null count: 35,890.0
-  Mean:          -0.303706
-  Std dev:       1.39535
-   min:          -33
-   1  :          -5
-   5  :          -3
+Unique non-null values: 22
+  Non-null count: 74,275.0
+  Mean:          -0.0685157
+  Std dev:       0.951048
+   min:          -15
+   1  :          -2
+   5  :          -1
    25 :          -1
    50 :          0
    75 :          0
    95 :          1
-   99 :          3
-   max:          22
+   99 :          2
+   max:          12
 
 --- Column: mid_range_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 7,314
-  Non-null count: 35,890.0
-  Mean:          1.99186e-05
-  Std dev:       2.80703e-05
+Unique non-null values: 23,505
+  Non-null count: 74,275.0
+  Mean:          4.02235e-05
+  Std dev:       4.31778e-05
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          7.2759e-06
-   75 :          3.62327e-05
-   95 :          7.27104e-05
-   99 :          0.000116386
-   max:          0.000501632
+   25 :          1.24702e-05
+   50 :          2.51272e-05
+   75 :          5.62903e-05
+   95 :          0.000119491
+   99 :          0.000199506
+   max:          0.000810393
 
 --- Column: imbalance_best ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 23
-  Non-null count: 35,890.0
-  Mean:          0.0043456
-  Std dev:       0.206229
-   min:          -0.8
-   1  :          -0.333333
-   5  :          -0.333333
-   25 :          0
+Unique non-null values: 205
+  Non-null count: 74,275.0
+  Mean:          0.00458698
+  Std dev:       0.324988
+   min:          -0.97619
+   1  :          -0.666667
+   5  :          -0.5
+   25 :          -0.333333
    50 :          0
-   75 :          0
-   95 :          0.333333
-   99 :          0.333333
-   max:          0.818182
+   75 :          0.333333
+   95 :          0.5
+   99 :          0.666667
+   max:          0.960784
 
 --- Column: cum_bid_size_l_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          1.00256
-  Std dev:       0.407002
-   min:          0.0928626
-   1  :          0.299445
-   5  :          0.463913
-   25 :          0.726717
-   50 :          0.950619
-   75 :          1.21314
-   95 :          1.70474
-   99 :          2.17227
-   max:          13.7735
+Unique non-null values: 74,275
+  Non-null count: 74,275.0
+  Mean:          1.00105
+  Std dev:       0.28468
+   min:          0.0855164
+   1  :          0.506355
+   5  :          0.645047
+   25 :          0.842041
+   50 :          0.974559
+   75 :          1.12022
+   95 :          1.42219
+   99 :          1.80072
+   max:          14.7741
 
 --- Column: cum_ask_size_l_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          1.00128
-  Std dev:       0.39386
-   min:          0.121823
-   1  :          0.346301
-   5  :          0.4817
-   25 :          0.735189
-   50 :          0.939354
-   75 :          1.1979
-   95 :          1.68484
-   99 :          2.1849
-   max:          14.1829
+Unique non-null values: 74,271
+  Non-null count: 74,275.0
+  Mean:          1.00121
+  Std dev:       0.292969
+   min:          0.173566
+   1  :          0.500243
+   5  :          0.639967
+   25 :          0.836751
+   50 :          0.968154
+   75 :          1.11891
+   95 :          1.44381
+   99 :          1.88765
+   max:          10.534
 
 --- Column: imbalance_l ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 332
-  Non-null count: 35,890.0
-  Mean:          0.0229372
-  Std dev:       0.269085
-   min:          -0.888889
-   1  :          -0.6
-   5  :          -0.428571
-   25 :          -0.142857
+Unique non-null values: 1,779
+  Non-null count: 74,275.0
+  Mean:          -0.0165039
+  Std dev:       0.177333
+   min:          -0.857143
+   1  :          -0.463415
+   5  :          -0.307692
+   25 :          -0.125
    50 :          0
-   75 :          0.2
-   95 :          0.466667
-   99 :          0.625
-   max:          0.960784
+   75 :          0.0909091
+   95 :          0.272727
+   99 :          0.411765
+   max:          0.848101
 
 --- Column: trade_volume_sum_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 27,998
-  Non-null count: 35,890.0
-  Mean:          0.82147
-  Std dev:       1.31193
+Unique non-null values: 72,098
+  Non-null count: 74,275.0
+  Mean:          1.00613
+  Std dev:       1.79913
    min:          0
    1  :          0
-   5  :          0
-   25 :          0.10556
-   50 :          0.520694
-   75 :          1.08401
-   95 :          2.46616
-   99 :          4.5994
+   5  :          9.35553e-07
+   25 :          1.00956e-05
+   50 :          0.457853
+   75 :          1.19802
+   95 :          3.9645
+   99 :          9.48009
    max:          15
 
 --- Column: trade_count_log ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 59
-  Non-null count: 35,890.0
-  Mean:          1.37276
-  Std dev:       0.949517
+Unique non-null values: 997
+  Non-null count: 74,275.0
+  Mean:          3.52238
+  Std dev:       1.52698
    min:          0
    1  :          0
-   5  :          0
-   25 :          0.693147
-   50 :          1.38629
-   75 :          2.07944
-   95 :          2.94444
-   99 :          3.43399
-   max:          4.11087
+   5  :          0.693147
+   25 :          2.48491
+   50 :          3.58352
+   75 :          4.70953
+   95 :          5.85793
+   99 :          6.42162
+   max:          8.14526
 
 --- Column: buy_trade_volume_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 24,390
-  Non-null count: 35,890.0
-  Mean:          0.382532
-  Std dev:       0.540589
+Unique non-null values: 69,284
+  Non-null count: 74,275.0
+  Mean:          0.000979891
+  Std dev:       0.191406
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          0.21969
-   75 :          0.569653
-   95 :          1.32853
-   99 :          2.26881
-   max:          22.4265
+   25 :          2.66339e-06
+   50 :          6.42601e-06
+   75 :          1.18963e-05
+   95 :          2.77278e-05
+   99 :          5.1073e-05
+   max:          48.8591
 
 --- Column: sell_trade_volume_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 23,918
-  Non-null count: 35,890.0
-  Mean:          0.375591
-  Std dev:       0.51666
+Unique non-null values: 69,503
+  Non-null count: 74,275.0
+  Mean:          0.000366096
+  Std dev:       0.0797097
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          0.21547
-   75 :          0.564146
-   95 :          1.32855
-   99 :          2.20189
-   max:          14.8053
+   25 :          2.74616e-06
+   50 :          6.64494e-06
+   75 :          1.24273e-05
+   95 :          2.95723e-05
+   99 :          5.69285e-05
+   max:          21.4177
 
 --- Column: trade_imbalance_ratio ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 602
-  Non-null count: 35,890.0
-  Mean:          0.0101908
-  Std dev:       0.530516
+Unique non-null values: 28,345
+  Non-null count: 74,275.0
+  Mean:          -0.0162556
+  Std dev:       0.42654
    min:          -1
    1  :          -1
-   5  :          -1
-   25 :          -0.272727
+   5  :          -0.8
+   25 :          -0.25
    50 :          0
-   75 :          0.333333
-   95 :          1
+   75 :          0.209877
+   95 :          0.764706
    99 :          1
    max:          1
 
 --- Column: has_buy_trade ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    1.0: 24,389 (67.95%)
-    0.0: 11,501 (32.05%)
-  Non-null count: 35,890.0
-  Mean:          0.679549
-  Std dev:       0.466657
+    1.0: 69,283 (93.28%)
+    0.0: 4,992 (6.72%)
+  Non-null count: 74,275.0
+  Mean:          0.93279
+  Std dev:       0.250386
    min:          0
    1  :          0
    5  :          0
-   25 :          0
+   25 :          1
    50 :          1
    75 :          1
    95 :          1
@@ -430,19 +430,19 @@ Unique non-null values: 2
 
 --- Column: has_sell_trade ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    1.0: 23,917 (66.64%)
-    0.0: 11,973 (33.36%)
-  Non-null count: 35,890.0
-  Mean:          0.666397
-  Std dev:       0.471506
+    1.0: 69,502 (93.57%)
+    0.0: 4,773 (6.43%)
+  Non-null count: 74,275.0
+  Mean:          0.935739
+  Std dev:       0.245219
    min:          0
    1  :          0
    5  :          0
-   25 :          0
+   25 :          1
    50 :          1
    75 :          1
    95 :          1
@@ -451,105 +451,105 @@ Unique non-null values: 2
 
 --- Column: avg_buy_dist_to_ask ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 955
-  Non-null count: 35,890.0
-  Mean:          6.36143
-  Std dev:       5.97505
+Unique non-null values: 10,703
+  Non-null count: 74,275.0
+  Mean:          3.08178
+  Std dev:       1.81426
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          6.88889
-   75 :          11.1818
-   95 :          16
-   99 :          18
-   max:          38
+   25 :          1.91927
+   50 :          2.57746
+   75 :          4.57143
+   95 :          6.07143
+   99 :          7.08333
+   max:          13.6703
 
 --- Column: avg_sell_dist_to_bid ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 997
-  Non-null count: 35,890.0
-  Mean:          6.62456
-  Std dev:       5.96803
+Unique non-null values: 11,013
+  Non-null count: 74,275.0
+  Mean:          3.08156
+  Std dev:       1.81022
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          8
-   75 :          11.5
-   95 :          16
-   99 :          17.6667
-   max:          54
+   25 :          1.91429
+   50 :          2.56294
+   75 :          4.54545
+   95 :          6.08333
+   99 :          7.14286
+   max:          12.7368
 
 --- Column: rv_log ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 26,043
-  Non-null count: 35,890.0
-  Mean:          -21.8861
-  Std dev:       1.43689
+Unique non-null values: 69,387
+  Non-null count: 74,275.0
+  Mean:          -20.9707
+  Std dev:       1.30038
    min:          -27.631
-   1  :          -27.631
-   5  :          -24.3263
-   25 :          -22.5881
-   50 :          -21.7649
-   75 :          -20.9814
-   95 :          -19.8363
-   99 :          -19.0351
-   max:          -17.6551
+   1  :          -24.2915
+   5  :          -23.217
+   25 :          -21.769
+   50 :          -20.9098
+   75 :          -20.1225
+   95 :          -18.8985
+   99 :          -18.1148
+   max:          -16.5059
 
 --- Column: tod_sin ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 24,163
-  Non-null count: 35,890.0
-  Mean:          -0.0540954
-  Std dev:       0.705598
+Unique non-null values: 34,102
+  Non-null count: 74,275.0
+  Mean:          -0.0646595
+  Std dev:       0.700147
    min:          -1
-   1  :          -0.999499
-   5  :          -0.987711
-   25 :          -0.750998
-   50 :          -0.12027
-   75 :          0.657223
-   95 :          0.985636
-   99 :          0.999455
+   1  :          -0.99964
+   5  :          -0.989584
+   25 :          -0.750289
+   50 :          -0.137843
+   75 :          0.62346
+   95 :          0.983861
+   99 :          0.999343
    max:          1
 
 --- Column: tod_cos ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 24,334
-  Non-null count: 35,890.0
-  Mean:          0.069699
-  Std dev:       0.703118
+Unique non-null values: 34,344
+  Non-null count: 74,275.0
+  Mean:          0.053248
+  Std dev:       0.709077
    min:          -1
-   1  :          -0.999323
-   5  :          -0.982265
-   25 :          -0.62346
-   50 :          0.143028
-   75 :          0.764099
-   95 :          0.990949
-   99 :          0.999647
+   1  :          -0.999178
+   5  :          -0.98137
+   25 :          -0.657476
+   50 :          0.0973157
+   75 :          0.766907
+   95 :          0.989891
+   99 :          0.999595
    max:          1
 
 --- Column: is_us_session ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    0.0: 25,189 (70.18%)
-    1.0: 10,701 (29.82%)
-  Non-null count: 35,890.0
-  Mean:          0.298161
-  Std dev:       0.457457
+    0.0: 52,355 (70.49%)
+    1.0: 21,920 (29.51%)
+  Non-null count: 74,275.0
+  Mean:          0.295119
+  Std dev:       0.4561
    min:          0
    1  :          0
    5  :          0
@@ -562,40 +562,38 @@ Unique non-null values: 2
 
 --- Column: spread_regime ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 3
+Unique non-null values: 1
   Value distribution (including NaN):
-    0.0: 15,924 (44.37%)
-    1.0: 12,078 (33.65%)
-    -1.0: 7,888 (21.98%)
-  Non-null count: 35,890.0
-  Mean:          0.116746
-  Std dev:       0.736679
-   min:          -1
-   1  :          -1
-   5  :          -1
+    0.0: 74,275 (100.00%)
+  Non-null count: 74,275.0
+  Mean:          0
+  Std dev:       0
+   min:          0
+   1  :          0
+   5  :          0
    25 :          0
    50 :          0
-   75 :          1
-   95 :          1
-   99 :          1
-   max:          1
+   75 :          0
+   95 :          0
+   99 :          0
+   max:          0
 
 --- Column: depth_regime ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    0.0: 33,852 (94.32%)
-    1.0: 1,619 (4.51%)
-    -1.0: 419 (1.17%)
-  Non-null count: 35,890.0
-  Mean:          0.0334355
-  Std dev:       0.235941
+    0.0: 72,937 (98.20%)
+    1.0: 1,252 (1.69%)
+    -1.0: 86 (0.12%)
+  Non-null count: 74,275.0
+  Mean:          0.0156984
+  Std dev:       0.133296
    min:          -1
-   1  :          -1
+   1  :          0
    5  :          0
    25 :          0
    50 :          0
@@ -606,21 +604,21 @@ Unique non-null values: 3
 
 --- Column: volume_regime ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    -1.0: 17,566 (48.94%)
-    0.0: 12,806 (35.68%)
-    1.0: 5,518 (15.37%)
-  Non-null count: 35,890.0
-  Mean:          -0.335692
-  Std dev:       0.728363
+    -1.0: 38,486 (51.82%)
+    0.0: 21,291 (28.67%)
+    1.0: 14,498 (19.52%)
+  Non-null count: 74,275.0
+  Mean:          -0.322962
+  Std dev:       0.780418
    min:          -1
    1  :          -1
    5  :          -1
    25 :          -1
-   50 :          0
+   50 :          -1
    75 :          0
    95 :          1
    99 :          1
@@ -628,42 +626,40 @@ Unique non-null values: 3
 
 --- Column: volatility_regime ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 3
+Unique non-null values: 1
   Value distribution (including NaN):
-    1.0: 12,201 (34.00%)
-    0.0: 11,849 (33.01%)
-    -1.0: 11,840 (32.99%)
-  Non-null count: 35,890.0
-  Mean:          0.0100585
-  Std dev:       0.818395
-   min:          -1
-   1  :          -1
-   5  :          -1
-   25 :          -1
+    0.0: 74,275 (100.00%)
+  Non-null count: 74,275.0
+  Mean:          0
+  Std dev:       0
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          0
    50 :          0
-   75 :          1
-   95 :          1
-   99 :          1
-   max:          1
+   75 :          0
+   95 :          0
+   99 :          0
+   max:          0
 
 --- Column: speed_regime ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    1.0: 25,029 (69.74%)
-    -1.0: 7,729 (21.54%)
-    0.0: 3,132 (8.73%)
-  Non-null count: 35,890.0
-  Mean:          0.482028
-  Std dev:       0.824864
+    1.0: 70,251 (94.58%)
+    0.0: 2,121 (2.86%)
+    -1.0: 1,903 (2.56%)
+  Non-null count: 74,275.0
+  Mean:          0.920202
+  Std dev:       0.353092
    min:          -1
    1  :          -1
-   5  :          -1
-   25 :          0
+   5  :          0
+   25 :          1
    50 :          1
    75 :          1
    95 :          1
@@ -672,372 +668,372 @@ Unique non-null values: 3
 
 --- Column: limit_add_bid_volume_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 29,062
-  Non-null count: 35,890.0
-  Mean:          1.22763
-  Std dev:       1.68028
+Unique non-null values: 69,543
+  Non-null count: 74,275.0
+  Mean:          1.14136
+  Std dev:       1.37041
    min:          0
    1  :          0
    5  :          0
-   25 :          0.324268
-   50 :          0.813614
-   75 :          1.62919
-   95 :          3.76474
-   99 :          6.61556
+   25 :          0.35531
+   50 :          0.825442
+   75 :          1.43687
+   95 :          3.3644
+   99 :          6.53995
    max:          25
 
 --- Column: limit_add_ask_volume_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 29,611
-  Non-null count: 35,890.0
-  Mean:          1.24967
-  Std dev:       1.49466
+Unique non-null values: 69,806
+  Non-null count: 74,275.0
+  Mean:          1.13849
+  Std dev:       1.36693
    min:          0
    1  :          0
    5  :          0
-   25 :          0.358861
-   50 :          0.855464
-   75 :          1.68682
-   95 :          3.83747
-   99 :          6.52475
+   25 :          0.355193
+   50 :          0.816017
+   75 :          1.43065
+   95 :          3.36906
+   99 :          6.51588
    max:          25
 
 --- Column: limit_cancel_bid_volume_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 25,856
-  Non-null count: 35,890.0
-  Mean:          0.763922
-  Std dev:       0.970745
+Unique non-null values: 69,434
+  Non-null count: 74,275.0
+  Mean:          0.884978
+  Std dev:       0.945099
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          0.47753
-   75 :          1.04041
-   95 :          2.59613
-   99 :          4.42309
-   max:          20.1117
+   25 :          0.28568
+   50 :          0.671396
+   75 :          1.15758
+   95 :          2.53789
+   99 :          4.55802
+   max:          16.6
 
 --- Column: limit_cancel_ask_volume_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 26,396
-  Non-null count: 35,890.0
-  Mean:          0.775021
-  Std dev:       0.962592
+Unique non-null values: 69,722
+  Non-null count: 74,275.0
+  Mean:          0.887965
+  Std dev:       0.945148
    min:          0
    1  :          0
    5  :          0
-   25 :          0
-   50 :          0.497856
-   75 :          1.06027
-   95 :          2.58107
-   99 :          4.26335
-   max:          25
+   25 :          0.288019
+   50 :          0.672816
+   75 :          1.16021
+   95 :          2.53808
+   99 :          4.525
+   max:          19.9159
 
 --- Column: limit_of_imbalance ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 619
-  Non-null count: 35,890.0
-  Mean:          -0.0186931
-  Std dev:       1.04451
+Unique non-null values: 9,417
+  Non-null count: 74,275.0
+  Mean:          -0.0154771
+  Std dev:       1.22655
    min:          -10
-   1  :          -3
-   5  :          -1
-   25 :          -0.5
+   1  :          -3.51857
+   5  :          -1.42857
+   25 :          -0.428571
    50 :          0
-   75 :          0.466667
-   95 :          1
-   99 :          3
+   75 :          0.389831
+   95 :          1.4
+   99 :          3.5
    max:          10
 
 --- Column: ofi_bid ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 16,289
-  Non-null count: 35,890.0
-  Mean:          0.07649
-  Std dev:       0.186002
-   min:          -1.03818
-   1  :          -0.379803
-   5  :          -0.190453
-   25 :          0
+Unique non-null values: 59,714
+  Non-null count: 74,275.0
+  Mean:          0.0460633
+  Std dev:       0.347073
+   min:          -1.90126
+   1  :          -0.858681
+   5  :          -0.514839
+   25 :          -0.113443
    50 :          0
-   75 :          0.162984
-   95 :          0.41152
-   99 :          0.69315
-   max:          1.72506
+   75 :          0.207296
+   95 :          0.662812
+   99 :          1.03566
+   max:          2.67079
 
 --- Column: ofi_ask ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 17,367
-  Non-null count: 35,890.0
-  Mean:          -0.0661106
-  Std dev:       0.202635
-   min:          -1.38629
-   1  :          -0.68393
-   5  :          -0.417639
-   25 :          -0.172439
+Unique non-null values: 60,070
+  Non-null count: 74,275.0
+  Mean:          -0.0321533
+  Std dev:       0.345563
+   min:          -2.35217
+   1  :          -1.03522
+   5  :          -0.650061
+   25 :          -0.185599
    50 :          0
-   75 :          0
-   95 :          0.208394
-   99 :          0.407039
-   max:          0.956022
+   75 :          0.136737
+   95 :          0.530847
+   99 :          0.853967
+   max:          1.76349
 
 --- Column: ofi_net_log ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 21,103
-  Non-null count: 35,890.0
-  Mean:          0.0103624
-  Std dev:       0.29318
-   min:          -1.51371
-   1  :          -0.806037
-   5  :          -0.491807
-   25 :          -0.141474
+Unique non-null values: 65,276
+  Non-null count: 74,275.0
+  Mean:          0.0108021
+  Std dev:       0.52329
+   min:          -2.42389
+   1  :          -1.32461
+   5  :          -0.889926
+   25 :          -0.268611
    50 :          0
-   75 :          0.152766
-   95 :          0.518165
-   99 :          0.870941
-   max:          1.59903
+   75 :          0.292614
+   95 :          0.908856
+   99 :          1.33193
+   max:          2.80545
 
 --- Column: bid_offset_level_1_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35
-  Non-null count: 35,890.0
-  Mean:          5.81893
-  Std dev:       1.3409
-   min:          0.5
-   1  :          4
-   5  :          4
-   25 :          5
-   50 :          5.5
-   75 :          7
-   95 :          8
-   99 :          9
-   max:          25.5
+Unique non-null values: 14
+  Non-null count: 74,275.0
+  Mean:          1.826
+  Std dev:       0.840909
+   min:          0
+   1  :          0.5
+   5  :          1
+   25 :          1
+   50 :          1.5
+   75 :          2.5
+   95 :          3
+   99 :          3.5
+   max:          6.5
 
 --- Column: bid_offset_level_2_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 60
-  Non-null count: 35,890.0
-  Mean:          2.82595
-  Std dev:       3.77694
-   min:          -13
+Unique non-null values: 35
+  Non-null count: 74,275.0
+  Mean:          2.75289
+  Std dev:       1.11221
+   min:          -12
    1  :          0
-   5  :          0
-   25 :          0
-   50 :          0
-   75 :          6.5
-   95 :          9
-   99 :          13
-   max:          32
+   5  :          1
+   25 :          2
+   50 :          2.5
+   75 :          3.5
+   95 :          4.5
+   99 :          5.5
+   max:          10.5
 
 --- Column: bid_offset_level_3_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 85
-  Non-null count: 35,890.0
-  Mean:          8.34124
-  Std dev:       6.00043
-   min:          -9
+Unique non-null values: 39
+  Non-null count: 74,275.0
+  Mean:          3.73488
+  Std dev:       1.50997
+   min:          -6
    1  :          0
-   5  :          0
+   5  :          1.5
    25 :          3
-   50 :          9
-   75 :          12.5
-   95 :          17.5
-   99 :          21
-   max:          37.5
+   50 :          3.5
+   75 :          4.5
+   95 :          6
+   99 :          7.5
+   max:          22
 
 --- Column: ask_offset_level_1_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35
-  Non-null count: 35,890.0
-  Mean:          5.81893
-  Std dev:       1.3409
-   min:          0.5
-   1  :          4
-   5  :          4
-   25 :          5
-   50 :          5.5
-   75 :          7
-   95 :          8
-   99 :          9
-   max:          25.5
+Unique non-null values: 14
+  Non-null count: 74,275.0
+  Mean:          1.826
+  Std dev:       0.840909
+   min:          0
+   1  :          0.5
+   5  :          1
+   25 :          1
+   50 :          1.5
+   75 :          2.5
+   95 :          3
+   99 :          3.5
+   max:          6.5
 
 --- Column: ask_offset_level_2_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 56
-  Non-null count: 35,890.0
-  Mean:          4.6866
-  Std dev:       4.11562
-   min:          -4.5
+Unique non-null values: 38
+  Non-null count: 74,275.0
+  Mean:          2.76713
+  Std dev:       1.14269
+   min:          -6
    1  :          0
-   5  :          0
-   25 :          0
-   50 :          6
-   75 :          8
-   95 :          10.5
-   99 :          14.5
-   max:          32
+   5  :          1
+   25 :          2
+   50 :          2.5
+   75 :          3.5
+   95 :          4.5
+   99 :          5.5
+   max:          48
 
 --- Column: ask_offset_level_3_ticks ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 65
-  Non-null count: 35,890.0
-  Mean:          2.93621
-  Std dev:       5.3059
-   min:          -13
+Unique non-null values: 41
+  Non-null count: 74,275.0
+  Mean:          3.7477
+  Std dev:       1.65969
+   min:          -5
    1  :          0
-   5  :          0
-   25 :          0
-   50 :          0
-   75 :          5.5
-   95 :          14.5
-   99 :          17
-   max:          40
+   5  :          1.5
+   25 :          3
+   50 :          3.5
+   75 :          4.5
+   95 :          6
+   99 :          7.5
+   max:          79
 
 --- Column: bid_size_level_1_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          0.218519
-  Std dev:       0.0929532
-   min:          0.0440569
-   1  :          0.0932419
-   5  :          0.122489
-   25 :          0.153316
-   50 :          0.190296
-   75 :          0.25036
-   95 :          0.442151
-   99 :          0.507349
-   max:          2
+Unique non-null values: 74,275
+  Non-null count: 74,275.0
+  Mean:          0.128226
+  Std dev:       0.0830375
+   min:          0.0270205
+   1  :          0.0361709
+   5  :          0.0422988
+   25 :          0.0779184
+   50 :          0.0989488
+   75 :          0.16628
+   95 :          0.266848
+   99 :          0.385815
+   max:          3.33455
 
 --- Column: bid_size_level_2_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 14,149
-  Non-null count: 35,890.0
-  Mean:          0.0812925
-  Std dev:       0.11439
+Unique non-null values: 72,507
+  Non-null count: 74,275.0
+  Mean:          0.214211
+  Std dev:       0.119052
    min:          0
    1  :          0
-   5  :          0
-   25 :          0
-   50 :          0
-   75 :          0.162617
-   95 :          0.271935
-   99 :          0.472563
-   max:          1.02896
+   5  :          0.0754232
+   25 :          0.152406
+   50 :          0.209362
+   75 :          0.265992
+   95 :          0.383589
+   99 :          0.521329
+   max:          4.9909
 
 --- Column: bid_size_level_3_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 27,525
-  Non-null count: 35,890.0
-  Mean:          0.170592
-  Std dev:       0.133569
+Unique non-null values: 73,497
+  Non-null count: 74,275.0
+  Mean:          0.217481
+  Std dev:       0.109241
    min:          0
    1  :          0
-   5  :          0
-   25 :          0.105637
-   50 :          0.16372
-   75 :          0.234202
-   95 :          0.440088
-   99 :          0.543165
-   max:          2.90131
+   5  :          0.0835689
+   25 :          0.162526
+   50 :          0.208216
+   75 :          0.256222
+   95 :          0.371066
+   99 :          0.509029
+   max:          4.93998
 
 --- Column: ask_size_level_1_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 35,890
-  Non-null count: 35,890.0
-  Mean:          0.227091
-  Std dev:       0.0916305
-   min:          0.0448525
-   1  :          0.105149
-   5  :          0.135069
-   25 :          0.165746
-   50 :          0.200343
-   75 :          0.244829
-   95 :          0.44572
-   99 :          0.498413
-   max:          1
+Unique non-null values: 74,271
+  Non-null count: 74,275.0
+  Mean:          0.122971
+  Std dev:       0.0832243
+   min:          0.0274058
+   1  :          0.0335116
+   5  :          0.0405473
+   25 :          0.074626
+   50 :          0.0936167
+   75 :          0.160435
+   95 :          0.256994
+   99 :          0.375528
+   max:          3.39552
 
 --- Column: ask_size_level_2_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 22,150
-  Non-null count: 35,890.0
-  Mean:          0.134047
-  Std dev:       0.124196
+Unique non-null values: 72,716
+  Non-null count: 74,275.0
+  Mean:          0.210794
+  Std dev:       0.120451
    min:          0
    1  :          0
-   5  :          0
-   25 :          0
-   50 :          0.157605
-   75 :          0.215475
-   95 :          0.357573
-   99 :          0.474388
-   max:          1.55856
+   5  :          0.0730502
+   25 :          0.148408
+   50 :          0.204151
+   75 :          0.26143
+   95 :          0.380417
+   99 :          0.523735
+   max:          4.84608
 
 --- Column: ask_size_level_3_rel ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
-Unique non-null values: 9,259
-  Non-null count: 35,890.0
-  Mean:          0.0633793
-  Std dev:       0.127701
+Unique non-null values: 73,666
+  Non-null count: 74,275.0
+  Mean:          0.215405
+  Std dev:       0.112823
    min:          0
-   1  :          0
-   5  :          0
-   25 :          0
-   50 :          0
-   75 :          0.126889
-   95 :          0.317187
-   99 :          0.500933
-   max:          3.8964
+   1  :          0.0535825
+   5  :          0.081495
+   25 :          0.157951
+   50 :          0.203447
+   75 :          0.253623
+   95 :          0.375505
+   99 :          0.534983
+   max:          4.56375
 
 --- Column: bid_level_1_present ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 1
   Value distribution (including NaN):
-    1.0: 35,890 (100.00%)
-  Non-null count: 35,890.0
+    1.0: 74,275 (100.00%)
+  Non-null count: 74,275.0
   Mean:          1
   Std dev:       0
    min:          1
@@ -1052,20 +1048,20 @@ Unique non-null values: 1
 
 --- Column: bid_level_2_present ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    0.0: 21,742 (60.58%)
-    1.0: 14,148 (39.42%)
-  Non-null count: 35,890.0
-  Mean:          0.394205
-  Std dev:       0.488686
+    1.0: 72,506 (97.62%)
+    0.0: 1,769 (2.38%)
+  Non-null count: 74,275.0
+  Mean:          0.976183
+  Std dev:       0.152479
    min:          0
    1  :          0
-   5  :          0
-   25 :          0
-   50 :          0
+   5  :          1
+   25 :          1
+   50 :          1
    75 :          1
    95 :          1
    99 :          1
@@ -1073,18 +1069,18 @@ Unique non-null values: 2
 
 --- Column: bid_level_3_present ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    1.0: 27,524 (76.69%)
-    0.0: 8,366 (23.31%)
-  Non-null count: 35,890.0
-  Mean:          0.766899
-  Std dev:       0.422812
+    1.0: 73,496 (98.95%)
+    0.0: 779 (1.05%)
+  Non-null count: 74,275.0
+  Mean:          0.989512
+  Std dev:       0.101873
    min:          0
    1  :          0
-   5  :          0
+   5  :          1
    25 :          1
    50 :          1
    75 :          1
@@ -1094,12 +1090,12 @@ Unique non-null values: 2
 
 --- Column: ask_level_1_present ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 1
   Value distribution (including NaN):
-    1.0: 35,890 (100.00%)
-  Non-null count: 35,890.0
+    1.0: 74,275 (100.00%)
+  Non-null count: 74,275.0
   Mean:          1
   Std dev:       0
    min:          1
@@ -1114,19 +1110,19 @@ Unique non-null values: 1
 
 --- Column: ask_level_2_present ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    1.0: 22,149 (61.71%)
-    0.0: 13,741 (38.29%)
-  Non-null count: 35,890.0
-  Mean:          0.617136
-  Std dev:       0.486092
+    1.0: 72,719 (97.91%)
+    0.0: 1,556 (2.09%)
+  Non-null count: 74,275.0
+  Mean:          0.979051
+  Std dev:       0.143215
    min:          0
    1  :          0
-   5  :          0
-   25 :          0
+   5  :          1
+   25 :          1
    50 :          1
    75 :          1
    95 :          1
@@ -1135,20 +1131,20 @@ Unique non-null values: 2
 
 --- Column: ask_level_3_present ---
 Dtype: float64
-Total rows: 35,890
+Total rows: 74,275
 Nulls: 0 (0.00%)
 Unique non-null values: 2
   Value distribution (including NaN):
-    0.0: 26,632 (74.20%)
-    1.0: 9,258 (25.80%)
-  Non-null count: 35,890.0
-  Mean:          0.257955
-  Std dev:       0.437515
+    1.0: 73,669 (99.18%)
+    0.0: 606 (0.82%)
+  Non-null count: 74,275.0
+  Mean:          0.991841
+  Std dev:       0.0899578
    min:          0
-   1  :          0
-   5  :          0
-   25 :          0
-   50 :          0
+   1  :          1
+   5  :          1
+   25 :          1
+   50 :          1
    75 :          1
    95 :          1
    99 :          1
@@ -1156,8 +1152,8 @@ Unique non-null values: 2
 
 === SAMPLE ROWS ===
    bar_index   start_timestamp_ns     end_timestamp_ns  mid_close_price  mid_high_price  mid_low_price  mid_return_bar  spread_ticks  spread_change_ticks  mid_range_rel  ...  bid_size_level_3_rel  ask_size_level_1_rel  ask_size_level_2_rel  ask_size_level_3_rel  bid_level_1_present  bid_level_2_present  bid_level_3_present  ask_level_1_present  ask_level_2_present  ask_level_3_present
-0          0  1702965600000000000  1702965601000000000        17140.250       17140.875      17140.000       -0.000036          16.0                  1.0       0.000051  ...                   0.0              1.000000                   0.0                   0.0                  1.0                  0.0                  0.0                  1.0                  0.0                  0.0
-1          5  1702965605000000000  1702965606000000000        17141.125       17141.250      17140.250        0.000051          15.0                 -1.0       0.000058  ...                   0.0              0.111111                   0.0                   0.0                  1.0                  0.0                  0.0                  1.0                  0.0                  0.0
-2          9  1702965609000000000  1702965610000000000        17140.625       17141.125      17140.500       -0.000029          15.0                  0.0       0.000036  ...                   0.0              0.112108                   0.0                   0.0                  1.0                  0.0                  0.0                  1.0                  0.0                  0.0
-3         10  1702965610000000000  1702965611000000000        17140.750       17141.125      17140.625        0.000007          16.0                  1.0       0.000029  ...                   0.0              0.113358                   0.0                   0.0                  1.0                  0.0                  0.0                  1.0                  0.0                  0.0
-4         12  1702965612000000000  1702965613000000000        17140.875       17140.875      17140.750        0.000007          15.0                 -1.0       0.000007  ...                   0.0              0.113570                   0.0                   0.0                  1.0                  0.0                  0.0                  1.0                  0.0                  0.0
+0          0  1727848800000000000  1727848801000000000         19984.75        19984.75      19984.750        0.000000           4.0                  0.0       0.000000  ...              3.000000              1.000000              1.000000              4.000000                  1.0                  1.0                  1.0                  1.0                  1.0                  1.0
+1          1  1727848801000000000  1727848802000000000         19984.75        19984.75      19984.625        0.000006           4.0                 -1.0       0.000006  ...              0.300000              0.111111              0.111111              0.444444                  1.0                  1.0                  1.0                  1.0                  1.0                  1.0
+2          2  1727848802000000000  1727848803000000000         19984.75        19984.75      19984.750        0.000000           4.0                  0.0       0.000000  ...              0.297619              0.111111              0.111111              0.444444                  1.0                  1.0                  1.0                  1.0                  1.0                  1.0
+3          3  1727848803000000000  1727848804000000000         19984.75        19984.75      19984.750        0.000000           4.0                  0.0       0.000000  ...              0.295905              0.111111              0.111111              0.444444                  1.0                  1.0                  1.0                  1.0                  1.0                  1.0
+4          6  1727848806000000000  1727848807000000000         19984.75        19984.75      19984.750        0.000000           4.0                  0.0       0.000000  ...              0.295985              0.111111              0.111111              0.444444                  1.0                  1.0                  1.0                  1.0                  1.0                  1.0

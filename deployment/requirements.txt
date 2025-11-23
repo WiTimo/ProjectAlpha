@@ -1,1 +1,2 @@
 watchdog
+joblib>=1.3

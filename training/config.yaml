@@ -1,0 +1,67 @@
+# TCN Training Configuration
+
+paths:
+  feature_root: "data/partially"
+  label_root: "data/partially"
+  cache_dir: "runs/cache"
+  model_export_dir: "runs/models"
+  checkpoint_dir: "runs/checkpoints"
+
+data:
+  resolutions: ["fast", "mid", "slow"]
+  feature_set: "phase5"
+  # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
+  limit_files: 0
+  # Splits
+  val_days: 2
+  test_days: 2
+  
+training:
+  target: "t40" # Primary target horizon
+  primary_only: true # Ignore other targets if true
+  sequence_len: 96
+  batch_size: 96
+  epochs: 20
+  learning_rate: 3.0e-4
+  weight_decay: 5.0e-4
+  max_gradient_norm: 1.0
+  patience: 6
+  min_delta: 5.0e-4
+  
+  # Loss configuration
+  class_weight_power: 0.4
+  target_loss_weights: null # List of floats if using multiple targets
+
+chunking:
+  enabled: false
+  chunk_size_gb: 2.0   # Target RAM budget per chunk
+  local_epochs: 3      # How many passes to make over each chunk before discarding
+  prefetch_chunks: 2   # Overlap disk I/O with compute
+  shuffle_entries: true
+  seed: 1337
+
+model:
+  hidden_dim: 64
+  layers: 3
+  stacks: 1
+  kernel_size: 5
+  dilation_base: 2
+  dropout: 0.25
+
+trade_simulation:
+  threshold: 0.55
+  target_ticks: 40.0
+  stop_ticks: 40.0
+  tick_size: 0.25
+
+evaluation:
+  logistic_max_samples: 200000
+  logistic_max_iter: 200
+  logistic_C: 1.0
+  logistic_solver: "saga"
+  logistic_random_state: 1337
+
+system:
+  device: "cuda"
+  num_workers: 0
+  pin_memory: true

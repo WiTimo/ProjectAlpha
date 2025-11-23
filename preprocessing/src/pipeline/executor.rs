@@ -1,45 +1,35 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use arrow_array::{ArrayRef, Float64Array, Int8Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
+use rayon::prelude::*;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
-use crate::config::{PipelineConfig, TargetSpec};
-use crate::domain::{Label, LabelOutcome, LabelStats, MarketEvent, Resolution};
+use crate::config::{PipelineConfig, ResolutionConfig, TargetSpec};
+use crate::domain::{Label, LabelOutcome, LabelStats, MarketEvent, MarketEventKind, Resolution};
 use crate::io::{EventReader, FileEventReader};
+use crate::normalization::CausalScalerState;
 
-use super::bars::build_bars;
 use super::context::PipelineContext;
-use super::core_features::{CoreFeatureExtractor, write_core_features_parquet};
-use super::labeling::{LabelingEngine, TimeSplitAssigner};
+use super::core_features::{CoreFeatureRow, CoreFeatureWriter, DEFAULT_FEATURE_FLUSH_ROWS};
+use super::labeling::{LabelingEngine, MidPriceAnchor, TimeSplitAssigner};
+use super::streaming::StreamingFeatureEngine;
 
 /// High-level orchestrator that will wire event sources, bar builders, and sinks.
 pub struct PreprocessingPipeline {
     pub config: PipelineConfig,
     pub ctx: PipelineContext,
-    feature_extractors: HashMap<Resolution, CoreFeatureExtractor>,
 }
 
 impl PreprocessingPipeline {
     pub fn new(config: PipelineConfig) -> Self {
         let ctx = PipelineContext::new(&config);
-        let mut feature_extractors = HashMap::new();
-        for resolution_cfg in &config.resolutions {
-            feature_extractors.insert(
-                resolution_cfg.resolution,
-                CoreFeatureExtractor::new(config.instrument.tick_size, &config.normalization),
-            );
-        }
-        Self {
-            config,
-            ctx,
-            feature_extractors,
-        }
+        Self { config, ctx }
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -69,16 +59,26 @@ impl PreprocessingPipeline {
         self.log_resolution_plan();
 
         let total = input_files.len();
-        for (idx, input_file) in input_files.iter().enumerate() {
-            // Check if we should skip this file because all outputs already exist
-            if self.config.skip_existing && self.all_outputs_exist(input_file) {
+        let flush_rows = if self.config.batch_size > 0 {
+            self.config.batch_size
+        } else {
+            DEFAULT_FEATURE_FLUSH_ROWS
+        };
+        let shared_config = Arc::new(self.config.clone());
+        let counter = AtomicUsize::new(0);
+
+        input_files.into_par_iter().for_each(|input_file| {
+            let config = shared_config.clone();
+            let idx = counter.fetch_add(1, Ordering::Relaxed);
+
+            if config.skip_existing && all_outputs_exist(&config, &input_file) {
                 println!(
                     "[{}/{}] skipping {} (all outputs exist)",
                     idx + 1,
                     total,
                     input_file.display()
                 );
-                continue;
+                return;
             }
 
             println!(
@@ -88,38 +88,7 @@ impl PreprocessingPipeline {
                 input_file.display()
             );
 
-            // Process file and catch errors to continue with next file
-            let result = if self.config.batch_size > 0 {
-                self.process_file_streaming(input_file)
-            } else {
-                // Legacy: load all events into memory at once
-                let events = match read_events(input_file, self.config.instrument.levels) {
-                    Ok(e) => e,
-                    Err(err) => {
-                        eprintln!(
-                            "[{}/{}] ERROR processing {}: {} (skipping)",
-                            idx + 1,
-                            total,
-                            input_file.display(),
-                            err
-                        );
-                        continue;
-                    }
-                };
-                if events.is_empty() {
-                    println!(
-                        "{} yielded no market events; skipping file",
-                        input_file.display()
-                    );
-                    continue;
-                }
-
-                let label_output = derive_output_path(&self.config.io.feature_output_path, input_file);
-                self.run_labeling_for(&events, input_file, &label_output)
-                    .and_then(|_| self.run_core_features_for(&events, input_file))
-            };
-
-            if let Err(err) = result {
+            if let Err(err) = process_file_streaming(config.as_ref(), &input_file, flush_rows) {
                 eprintln!(
                     "[{}/{}] ERROR processing {}: {} (skipping)",
                     idx + 1,
@@ -128,127 +97,10 @@ impl PreprocessingPipeline {
                     err
                 );
             }
-        }
+        });
 
         if self.config.dry_run {
             println!("Dry-run completed; no files were written.");
-        }
-
-        Ok(())
-    }
-
-    fn run_labeling_for(
-        &self,
-        events: &[MarketEvent],
-        input_file: &Path,
-        output_path: &Path,
-    ) -> Result<()> {
-        if events.is_empty() {
-            println!(
-                "Labeling: {} yielded no market events (skipping label computation)",
-                input_file.display()
-            );
-            return Ok(());
-        }
-
-        let engine = LabelingEngine::new(
-            self.config.labeling.clone(),
-            self.config.instrument.tick_size,
-        );
-        let labels = engine.compute_labels(&events);
-        if labels.is_empty() {
-            println!(
-                "Labeling: {} had no mid-price quotes; labels were not produced",
-                input_file.display()
-            );
-            return Ok(());
-        }
-
-        let stats = engine.summarize(&labels);
-        log_label_stats(&stats, input_file);
-
-        let splitter = TimeSplitAssigner::new(self.config.data_split.clone());
-        let assignments = splitter.assign(&labels);
-        let summary = splitter.summary(&assignments);
-        println!(
-            "Labeling: {} splits -> train={} validation={} test={}",
-            input_file.display(),
-            summary.train,
-            summary.validation,
-            summary.test
-        );
-
-        if !self.config.dry_run {
-            write_labels_parquet(output_path, &labels, &self.config.labeling.targets)?;
-            println!(
-                "Labeling: {} wrote {} labels -> {}",
-                input_file.display(),
-                labels.len(),
-                output_path.display()
-            );
-        }
-
-        Ok(())
-    }
-
-    fn run_core_features_for(&mut self, events: &[MarketEvent], input_file: &Path) -> Result<()> {
-        let resolution_plan = self.config.resolutions.clone();
-        for resolution_cfg in resolution_plan {
-            let bars = build_bars(events, resolution_cfg.resolution, resolution_cfg.levels);
-            if bars.is_empty() {
-                println!(
-                    "Features: {} [{}] produced no bars",
-                    input_file.display(),
-                    resolution_cfg.resolution
-                );
-                continue;
-            }
-
-            if bars.iter().all(|bar| bar.trade_count == 0) {
-                println!(
-                    "Features: {} [{}] observed no trade prints; trade_* features remain 0",
-                    input_file.display(),
-                    resolution_cfg.resolution
-                );
-            }
-
-            let extractor = self
-                .feature_extractors
-                .get_mut(&resolution_cfg.resolution)
-                .expect("missing feature extractor for resolution");
-            let rows = extractor.compute(&bars);
-            if rows.is_empty() {
-                println!(
-                    "Features: {} [{}] had insufficient data for Phase 1 metrics",
-                    input_file.display(),
-                    resolution_cfg.resolution
-                );
-                continue;
-            }
-
-            if self.config.dry_run {
-                println!(
-                    "Features[dry-run]: {} [{}] rows={}",
-                    input_file.display(),
-                    resolution_cfg.resolution,
-                    rows.len()
-                );
-                continue;
-            }
-
-            let output_path = derive_feature_output_path(
-                &self.config.io.feature_output_path,
-                input_file,
-                resolution_cfg.resolution,
-            );
-            write_core_features_parquet(&output_path, &rows)?;
-            println!(
-                "Features: {} [{}] wrote {} rows -> {}",
-                input_file.display(),
-                resolution_cfg.resolution,
-                rows.len(),
-                output_path.display()
-            );
         }
 
         Ok(())
@@ -263,88 +115,340 @@ impl PreprocessingPipeline {
             );
         }
     }
+}
 
-    /// Check if all expected output files (labels + all resolution features) exist for an input file
-    fn all_outputs_exist(&self, input_file: &Path) -> bool {
-        // Check if label output exists
-        let label_output = derive_output_path(&self.config.io.feature_output_path, input_file);
-        if !label_output.exists() {
-            return false;
+fn process_file_streaming(
+    config: &PipelineConfig,
+    input_file: &Path,
+    flush_rows: usize,
+) -> Result<()> {
+    let mut reader = FileEventReader::new(input_file, config.instrument.levels)?;
+    let mut label_collector = MidSeriesCollector::new();
+    let mut streams = build_resolution_streams(config, input_file, flush_rows)?;
+    let mut total_events = 0usize;
+    let mut event_index = 0usize;
+
+    while let Some(event) = reader.next_event()? {
+        total_events += 1;
+        label_collector.ingest(event_index, &event);
+        for stream in streams.iter_mut() {
+            stream.ingest(&event)?;
         }
-
-        // Check if all resolution feature outputs exist
-        for resolution_cfg in &self.config.resolutions {
-            let feature_output = derive_feature_output_path(
-                &self.config.io.feature_output_path,
-                input_file,
-                resolution_cfg.resolution,
-            );
-            if !feature_output.exists() {
-                return false;
-            }
-        }
-
-        true
+        event_index += 1;
     }
 
-    /// Process a single file using streaming/chunked approach for memory efficiency
-    /// This allows processing files larger than available RAM
-    fn process_file_streaming(&mut self, input_file: &Path) -> Result<()> {
-        let mut reader = FileEventReader::new(input_file, self.config.instrument.levels)?;
-        let mut event_batch = Vec::with_capacity(self.config.batch_size);
-        let mut total_events = 0usize;
-        let mut batch_count = 0usize;
-
-        // For streaming, we need to write incrementally
-        let label_output = derive_output_path(&self.config.io.feature_output_path, input_file);
-        
+    if total_events == 0 {
         println!(
-            "Streaming: {} using batch size {}",
-            input_file.display(),
-            self.config.batch_size
+            "{} yielded no market events; skipping file",
+            input_file.display()
         );
+        return Ok(());
+    }
 
-        loop {
-            event_batch.clear();
-            
-            // Read a batch of events
-            for _ in 0..self.config.batch_size {
-                match reader.next_event()? {
-                    Some(event) => event_batch.push(event),
-                    None => break,
-                }
-            }
+    let mut summaries = Vec::with_capacity(streams.len());
+    for stream in streams.into_iter() {
+        summaries.push(stream.finish()?);
+    }
+    for summary in &summaries {
+        summary.log(input_file);
+    }
 
-            if event_batch.is_empty() {
-                break;
-            }
+    let label_engine = LabelingEngine::new(
+        config.labeling.clone(),
+        config.instrument.tick_size,
+    );
+    let mid_series = label_collector.into_series();
+    if mid_series.is_empty() {
+        println!(
+            "Labeling: {} had no mid-price quotes; labels were not produced",
+            input_file.display()
+        );
+        return Ok(());
+    }
+    let labels = label_engine.compute_from_mid_series(&mid_series);
+    if labels.is_empty() {
+        println!(
+            "Labeling: {} had no mid-price quotes; labels were not produced",
+            input_file.display()
+        );
+        return Ok(());
+    }
 
-            total_events += event_batch.len();
-            batch_count += 1;
+    let stats = label_engine.summarize(&labels);
+    log_label_stats(&stats, input_file);
 
-            // Process this batch
-            // Note: For proper streaming, labeling and feature extraction would need
-            // to support append mode. For now, we collect batches and process at end.
-            // TODO: Implement true streaming with append-mode Parquet writers
+    let splitter = TimeSplitAssigner::new(config.data_split.clone());
+    let assignments = splitter.assign(&labels);
+    let summary = splitter.summary(&assignments);
+    println!(
+        "Labeling: {} splits -> train={} validation={} test={}",
+        input_file.display(),
+        summary.train,
+        summary.validation,
+        summary.test
+    );
+
+    if config.dry_run {
+        println!(
+            "Labeling[dry-run]: {} labels={}",
+            input_file.display(),
+            labels.len()
+        );
+        return Ok(());
+    }
+
+    let label_output = derive_output_path(&config.io.feature_output_path, input_file);
+    write_labels_parquet(&label_output, &labels, &config.labeling.targets)?;
+    println!(
+        "Labeling: {} wrote {} labels -> {}",
+        input_file.display(),
+        labels.len(),
+        label_output.display()
+    );
+
+    Ok(())
+}
+
+fn build_resolution_streams(
+    config: &PipelineConfig,
+    input_file: &Path,
+    flush_rows: usize,
+) -> Result<Vec<ResolutionStream>> {
+    config
+        .resolutions
+        .iter()
+        .map(|resolution_cfg| ResolutionStream::new(config, resolution_cfg, input_file, flush_rows))
+        .collect()
+}
+
+fn all_outputs_exist(config: &PipelineConfig, input_file: &Path) -> bool {
+    let label_output = derive_output_path(&config.io.feature_output_path, input_file);
+    if !label_output.exists() {
+        return false;
+    }
+
+    for resolution_cfg in &config.resolutions {
+        let feature_output = derive_feature_output_path(
+            &config.io.feature_output_path,
+            input_file,
+            resolution_cfg.resolution,
+        );
+        if !feature_output.exists() {
+            return false;
         }
+    }
 
-        if total_events == 0 {
-            println!(
-                "{} yielded no market events; skipping file",
-                input_file.display()
-            );
+    true
+}
+
+struct ResolutionStream {
+    resolution: Resolution,
+    engine: StreamingFeatureEngine,
+    writer: Option<CoreFeatureWriter<fs::File>>,
+    output_path: PathBuf,
+    rows_emitted: usize,
+    dry_run: bool,
+    state_writer: Option<NormalizationStateWriter>,
+}
+
+struct NormalizationStateWriter {
+    per_file_path: PathBuf,
+    latest_path: PathBuf,
+}
+
+impl ResolutionStream {
+    fn new(
+        config: &PipelineConfig,
+        resolution_cfg: &ResolutionConfig,
+        input_file: &Path,
+        flush_rows: usize,
+    ) -> Result<Self> {
+        let output_path = derive_feature_output_path(
+            &config.io.feature_output_path,
+            input_file,
+            resolution_cfg.resolution,
+        );
+        let writer = if config.dry_run {
+            None
+        } else {
+            Some(CoreFeatureWriter::create_file(&output_path, flush_rows)?)
+        };
+        let state_writer = if config.dry_run {
+            None
+        } else {
+            NormalizationStateWriter::new(
+                &config.io.checkpoint_path,
+                resolution_cfg.resolution,
+                input_file,
+            )
+        };
+        let engine = StreamingFeatureEngine::new(
+            resolution_cfg.resolution,
+            resolution_cfg.levels,
+            config.instrument.tick_size,
+            &config.normalization,
+        );
+        Ok(Self {
+            resolution: resolution_cfg.resolution,
+            engine,
+            writer,
+            output_path,
+            rows_emitted: 0,
+            dry_run: config.dry_run,
+            state_writer,
+        })
+    }
+
+    fn ingest(&mut self, event: &MarketEvent) -> Result<()> {
+        let rows = self.engine.ingest_event(event);
+        self.consume_rows(rows)
+    }
+
+    fn finish(mut self) -> Result<FeatureSummary> {
+        let rows = self.engine.finish();
+        self.consume_rows(rows)?;
+        if let Some(writer) = self.writer.take() {
+            writer.finish()?;
+        }
+        if let Some(state_writer) = &self.state_writer {
+            let state = self.engine.scaler_state();
+            state_writer.persist(&state)?;
+        }
+        Ok(FeatureSummary {
+            resolution: self.resolution,
+            rows: self.rows_emitted,
+            output_path: if self.dry_run {
+                None
+            } else {
+                Some(self.output_path)
+            },
+            dry_run: self.dry_run,
+        })
+    }
+
+    fn consume_rows(&mut self, rows: Vec<CoreFeatureRow>) -> Result<()> {
+        if rows.is_empty() {
             return Ok(());
         }
-
-        // For now, fall back to full processing if events fit in memory
-        // In production, implement incremental Parquet writing
-        
-        // Re-read for processing (temporary - TODO: implement true streaming)
-        let events = read_events(input_file, self.config.instrument.levels)?;
-        self.run_labeling_for(&events, input_file, &label_output)?;
-        self.run_core_features_for(&events, input_file)?;
-        
+        self.rows_emitted += rows.len();
+        if let Some(writer) = self.writer.as_mut() {
+            writer.append_rows(rows.into_iter())?;
+        }
         Ok(())
+    }
+}
+
+impl NormalizationStateWriter {
+    fn new(root: &Path, resolution: Resolution, input_file: &Path) -> Option<Self> {
+        let stem = input_file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("features");
+        let resolution_folder = root
+            .join("normalization")
+            .join(resolution.as_str());
+        let per_file_path = resolution_folder.join(format!("{stem}.json"));
+        let latest_path = root
+            .join("normalization")
+            .join("latest")
+            .join(format!("{}.json", resolution.as_str()));
+        Some(Self {
+            per_file_path,
+            latest_path,
+        })
+    }
+
+    fn persist(&self, state: &CausalScalerState) -> Result<()> {
+        let payload = serde_json::to_vec_pretty(state)?;
+        if let Some(parent) = self.per_file_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create normalization checkpoint directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&self.per_file_path, &payload).with_context(|| {
+            format!(
+                "Failed to persist scaler state to {}",
+                self.per_file_path.display()
+            )
+        })?;
+
+        if let Some(parent) = self.latest_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create latest normalization directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&self.latest_path, &payload).with_context(|| {
+            format!(
+                "Failed to persist latest scaler state to {}",
+                self.latest_path.display()
+            )
+        })?;
+        Ok(())
+    }
+}
+
+struct FeatureSummary {
+    resolution: Resolution,
+    rows: usize,
+    output_path: Option<PathBuf>,
+    dry_run: bool,
+}
+
+impl FeatureSummary {
+    fn log(&self, input_file: &Path) {
+        if self.rows == 0 {
+            println!(
+                "Features: {} [{}] produced no bars",
+                input_file.display(),
+                self.resolution
+            );
+        } else if self.dry_run {
+            println!(
+                "Features[dry-run]: {} [{}] rows={}",
+                input_file.display(),
+                self.resolution,
+                self.rows
+            );
+        } else if let Some(path) = &self.output_path {
+            println!(
+                "Features: {} [{}] wrote {} rows -> {}",
+                input_file.display(),
+                self.resolution,
+                self.rows,
+                path.display()
+            );
+        }
+    }
+}
+
+struct MidSeriesCollector {
+    anchors: Vec<MidPriceAnchor>,
+}
+
+impl MidSeriesCollector {
+    fn new() -> Self {
+        Self {
+            anchors: Vec::new(),
+        }
+    }
+
+    fn ingest(&mut self, event_index: usize, event: &MarketEvent) {
+        if let MarketEventKind::Quote(quote) = &event.kind {
+            if quote.mid_price.is_finite() {
+                self.anchors
+                    .push(MidPriceAnchor::new(event_index, event.timestamp, quote.mid_price));
+            }
+        }
+    }
+
+    fn into_series(self) -> Vec<MidPriceAnchor> {
+        self.anchors
     }
 }
 
@@ -443,15 +547,6 @@ const fn encode_outcome(outcome: LabelOutcome) -> i8 {
         LabelOutcome::HitDown => -1,
         LabelOutcome::NoHit => 0,
     }
-}
-
-fn read_events(path: &Path, levels: usize) -> Result<Vec<MarketEvent>> {
-    let mut reader = FileEventReader::new(path, levels)?;
-    let mut events = Vec::new();
-    while let Some(event) = reader.next_event()? {
-        events.push(event);
-    }
-    Ok(events)
 }
 
 fn collect_input_files(path: &Path) -> Result<Vec<PathBuf>> {
@@ -646,7 +741,7 @@ mod tests {
         }
 
         assert_eq!(outcomes.value(0), 1);
-        assert_eq!(outcomes.value(1), 0);
+        assert_eq!(outcomes.value(1), -1);
         Ok(())
     }
 }

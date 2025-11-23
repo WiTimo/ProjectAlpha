@@ -40,6 +40,7 @@ Remove = 2
 - Run `cargo run -- --dry-run` inside `preprocessing/` to inspect the configured resolutions without touching disk.
 - Override IO paths ad-hoc via `cargo run -- --input data/raw/training/TODO --output data/preprocessed/training/TODO`.
 - See `docs/ARCHITECTURE.md` for a walkthrough of the modules (`cli`, `config`, `domain`, `normalization`, `pipeline`, `io`, `utils`) and how they map to the schema below.
+- Every successful preprocessing run now persists causal normalization snapshots under `io.checkpoint_path/normalization/<resolution>/<source>.json` and updates `io.checkpoint_path/normalization/latest/<resolution>.json`. Point the realtime binary at this directory via `--norm-state-dir` so live scalers start with warmed statistics instead of cold states.
 
 ## 0\. Conventions
 

@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -6,6 +8,7 @@ use clap::Parser;
 
 use preprocessing::config::PipelineConfig;
 use preprocessing::domain::Resolution;
+use preprocessing::normalization::CausalScalerState;
 use preprocessing::realtime::{RealtimeConfig, RealtimePreprocessor, ResolutionPlanEntry};
 
 #[derive(Debug, Parser)]
@@ -50,6 +53,18 @@ struct RealtimeArgs {
     /// Override depth levels without editing config file.
     #[arg(long, value_name = "INT")]
     levels: Option<usize>,
+
+    /// Number of initial base bars to discard for normalization warmup.
+    #[arg(long, value_name = "INT", default_value_t = 0)]
+    norm_warmup: usize,
+
+    /// Directory containing scaler_state JSON files (e.g. fast.json, mid.json).
+    #[arg(long, value_name = "DIR")]
+    norm_state_dir: Option<PathBuf>,
+
+    /// Gap in seconds that triggers a new session (flushes multi-resolution caches).
+    #[arg(long, value_name = "INT", default_value_t = 900)]
+    session_gap_secs: i64,
 }
 
 fn main() -> Result<()> {
@@ -107,6 +122,13 @@ fn build_realtime_config(args: &RealtimeArgs, base: &PipelineConfig) -> Result<R
         });
     }
 
+    let normalization_state = if let Some(dir) = args.norm_state_dir.as_deref() {
+        load_normalization_states(dir, &plan)?
+    } else {
+        HashMap::new()
+    };
+    let session_reset_gap_ns = (args.session_gap_secs.max(0) as i128) * 1_000_000_000i128;
+
     Ok(RealtimeConfig {
         source_path: Some(args.source.clone()),
         start_from_end: args.follow,
@@ -115,5 +137,27 @@ fn build_realtime_config(args: &RealtimeArgs, base: &PipelineConfig) -> Result<R
         plan,
         tick_size: cfg.instrument.tick_size,
         normalization: cfg.normalization.clone(),
+        warmup_bars: args.norm_warmup,
+        normalization_state,
+        session_reset_gap_ns,
     })
+}
+
+fn load_normalization_states(
+    dir: &Path,
+    plan: &[ResolutionPlanEntry],
+) -> Result<HashMap<Resolution, CausalScalerState>> {
+    let mut states = HashMap::new();
+    for entry in plan {
+        let file = dir.join(format!("{}.json", entry.resolution.as_str()));
+        if !file.exists() {
+            continue;
+        }
+        let contents = fs::read_to_string(&file)
+            .with_context(|| format!("Failed to read scaler state from {}", file.display()))?;
+        let state: CausalScalerState = serde_json::from_str(&contents)
+            .with_context(|| format!("Invalid scaler state JSON in {}", file.display()))?;
+        states.insert(entry.resolution, state);
+    }
+    Ok(states)
 }

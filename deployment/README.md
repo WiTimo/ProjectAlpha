@@ -15,16 +15,20 @@ cargo run --bin realtime \
 	--emit ../runs/realtime/features.jsonl
 ```
 
+To reuse the fully warmed causal scalers from batch preprocessing, point `--norm-state-dir` at the checkpoint folder (e.g. `../data/preprocessed/training/.checkpoints/normalization/latest`). This eliminates the cold-start distribution shift at market open.
+
 Important flags:
 
 - `--config` – optional pipeline config file (YAML/JSON). Defaults to the built-in example.
-- `--resolutions` – comma-separated list of bar streams to emit. The first entry is treated as the base stream written to JSONL; slower resolutions feed multi-resolution suffixes (e.g., `mid_return_bar@mid`).
+- `--resolutions` – **must be** `fast,mid,slow` for both training and deployment. All three are required and must be present in every run.
 - `--source` – NinjaTrader `L2Log.txt` (or any compatible feed).
 - `--emit` – JSONL output path consumed by the inference watcher.
 - `--follow`, `--poll-ms`, `--tick-size`, `--levels` – runtime overrides when needed.
+- `--norm-warmup` – discard this many initial base bars to allow rolling normalization statistics (EWMA/windowed means) to stabilize before emitting features for inference. Set to the largest rolling window (e.g., 150–200) if early-bar distribution mismatch impacts live predictions.
+- `--norm-state-dir` – optional directory containing `fast.json`, `mid.json`, `slow.json` scaler snapshots produced by the Rust batch pipeline (`.checkpoints/normalization/latest`). When provided, realtime scalers are seeded with the saved state instead of starting cold each session.
+- `--session-gap-secs` – maximum idle gap before the realtime preprocessor resets multi-resolution caches and restarts the warmup sequence. Keep this aligned with the largest gap between files in training (default = 900 seconds) to match the forward-fill semantics applied offline.
 
-The emitter creates `runs/realtime/features.jsonl` by default, appending one JSON
-record per completed bar:
+**Note:** The pipeline will error if any resolution is missing. All three (fast, mid, slow) must be present for correct operation.
 
 ```json
 {
@@ -36,9 +40,7 @@ record per completed bar:
 }
 ```
 
-When multiple resolutions are enabled the realtime loop buffers until every
-slower stream has produced at least one bar, matching the training pipeline's
-requirement that multi-resolution columns be fully populated before inference.
+The realtime loop **requires** all three resolutions. It buffers until every slower stream has produced at least one bar, matching the training pipeline's requirement that multi-resolution columns be fully populated before inference. After a configurable idle gap (`--session-gap-secs`) the cache resets, forcing a fresh warmup so that stale slow-resolution data is never forwarded into a new session. If any resolution is missing, inference will not run.
 
 ## 2. Realtime Inference
 
@@ -49,14 +51,12 @@ cd deployment
 python realtime_inference.py \
 	--model-bundle ../runs/models/phase5_model.pt \
 	--features ../runs/realtime/features.jsonl \
-	--resolution fast
+	--resolutions fast mid slow
 ```
 
-The script loads the Phase 5 TCN bundle (model + scaler stats), standardizes the
-incoming feature columns (including any `@resolution` suffixes), warms up the
-sequence buffer to match the trained window length, runs inference, and logs the
-`up` probability for every configured target once the buffer is primed. Set
-`--resolution all` to observe every emitted base stream if needed.
+**Important:** The deployment script will error if any resolution is missing. You must provide all three: `fast`, `mid`, and `slow`.
+
+The script loads the Phase 5 TCN bundle (model + scaler stats), standardizes the incoming feature columns (including any `@resolution` suffixes), warms up the sequence buffer to match the trained window length, runs inference, and logs the `up` probability for every configured target once the buffer is primed. All three resolutions are required for correct operation.
 
 ## End-to-end checklist
 

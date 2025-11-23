@@ -5,12 +5,9 @@
   "description": "Helper npm scripts for running preprocessing and training tasks",
   "scripts": {
     "preprocessing": "cd preprocessing && cargo run --bin preprocessing -- --input \"D:/Ninjatrader_Market_Data/csv\" --output \"../data/preprocessed\" --resolutions fast,mid,slow --skip-existing",
-    "preprocessing:full": "cd preprocessing && cargo run --bin preprocessing -- --input \"D:/Ninjatrader_Market_Data/csv\" --output ../data/preprocessed --resolutions fast,mid,slow --skip-existing",
-    "preprocessing:memory-efficient": "cd preprocessing && cargo run --bin preprocessing -- --input \"D:/Ninjatrader_Market_Data/csv\" --output ../data/preprocessed --resolutions fast,mid,slow --skip-existing --batch-size 20000",
-    "preprocessing:unlimited": "cd preprocessing && cargo run --bin preprocessing -- --input \"D:/Ninjatrader_Market_Data/csv\" --output ../data/preprocessed --resolutions fast,mid,slow --skip-existing --batch-size 0",
-    "parquet": "python preprocessing/test/describe_parquet.py --input data/preprocessed/fast/20231219.parquet --output preprocessing/test/parquet-output.txt && python preprocessing/test/describe_parquet.py --input data/preprocessed/20231219.parquet --output preprocessing/test/parquet-labels-output.txt",
+    "parquet": "python preprocessing/test/describe_parquet.py --input data/partially/fast/20241002.parquet --output preprocessing/test/parquet-output.txt && python preprocessing/test/describe_parquet.py --input data/partially/20241002.parquet --output preprocessing/test/parquet-labels-output.txt",
     "packages": "python -m pip install -r training/requirements.txt && python -m pip install -r deployment/requirements.txt",
-    "training": "python3 training/tcn.py --feature-root data/preprocessed --label-root data/preprocessed --resolutions fast mid slow --feature-set phase5 --primary-only --class-weight-power 0.5 --sequence-len 64 --batch-size 128 --epochs 15 --learning-rate 5e-4 --dropout 0.3 --tcn-hidden 48 --tcn-layers 2 --weight-decay 0.001 --logistic-threshold-min 0.5 --logistic-threshold-max 0.8 --logistic-threshold-steps 7 --val-days 2 --test-days 2"
+    "training": "python training/tcn.py"
   },
   "engines": {
     "node": ">=14"

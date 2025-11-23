@@ -49,7 +49,7 @@ Forward-fills within each day to avoid lookahead
 Data Splitting:
 Day-based split (NOT random rows) to avoid regime drift
 Default: last 2 days = validation, next 2 days = test
-Can use external test directory for completely held-out period
+Train/test split is now handled exclusively via --test-days; external test directory (--feature-root-test) is deprecated and no longer supported.
 Standardization:
 Train-only statistics for mean/std
 Applied to train/val/test consistently
@@ -119,10 +119,7 @@ Cannot train model from scratch
 Impact: 🔴 CRITICAL - Cannot validate the complete workflow
 
 ISSUE #2: INCOMPLETE TESTING SETUP
-Training script supports --feature-root-test but no test data exists
-Cannot verify out-of-sample generalization
-Current setup only has in-sample test split from training period
-Impact: 🟡 HIGH - Risk of overfitting to training period
+Training script now uses --test-days for test split; --feature-root-test is deprecated. Out-of-sample generalization should be verified using the test split. Impact: 🟡 HIGH - Risk of overfitting to training period if test split is not representative.
 
 ISSUE #3: DEPLOYMENT PREPROCESSING PARITY NOT VERIFIED
 The Critical Question: Does realtime.rs produce EXACTLY the same features as main.rs?
@@ -153,6 +150,7 @@ Save rolling scaler state from training (last values)
 Initialize realtime scaler with saved state
 OR: Discard first N predictions until warmup completes
 OR: Run preprocessing on recent historical data to warmup, then switch to realtime
+✅ FIXED: The Rust pipeline now snapshots causal scaler state per resolution (`.checkpoints/normalization/...`), and the realtime binary can hydrate these via `--norm-state-dir`. Session resets also honor a configurable idle gap so the live stream mirrors batch warmup semantics.
 ISSUE #4: MODEL PERFORMANCE
 From next-steps.md:
 
@@ -181,6 +179,7 @@ May create noisy labels if bar spans target hit time
 Example:
 
 Impact: 🟡 MEDIUM - Label noise may hurt model performance
+✅ FIXED: Training label aggregation now respects chronological order inside each bar (earliest quote wins) instead of "any positive wins", eliminating conflicting labels when up/down hits occur within the same bar.
 
 ISSUE #7: MULTI-RESOLUTION FORWARD-FILL
 Code:
@@ -201,6 +200,7 @@ Mismatch:
 Training: forward-fills slower features aggressively
 Deployment: waits for all resolutions to have ≥1 completed bar
 Impact: 🟡 MEDIUM - Training/deployment feature distributions may differ
+✅ FIXED: The realtime preprocessor now clears multi-resolution caches and restarts warmup after any configurable idle gap, matching the per-file forward-fill boundaries used offline so slow features are never leaked across sessions.
 
 ISSUE #8: NO TEST HARNESS FOR DEPLOYMENT
 Missing:

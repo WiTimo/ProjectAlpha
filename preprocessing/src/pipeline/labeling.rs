@@ -19,37 +19,46 @@ impl LabelingEngine {
 
     /// Convert a chronologically ordered stream of market events into labels.
     pub fn compute_labels(&self, events: &[MarketEvent]) -> Vec<Label> {
-        let mut mid_series: Vec<(usize, LabelAnchor)> = Vec::with_capacity(events.len());
+        let mid_series: Vec<MidPriceAnchor> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, event)| match &event.kind {
+                MarketEventKind::Quote(quote) if quote.mid_price.is_finite() => Some(
+                    MidPriceAnchor::new(idx, event.timestamp, quote.mid_price),
+                ),
+                _ => None,
+            })
+            .collect();
+        self.compute_from_mid_series(&mid_series)
+    }
 
-        for (idx, event) in events.iter().enumerate() {
-            let MarketEventKind::Quote(quote) = &event.kind else {
-                continue;
-            };
-            if !quote.mid_price.is_finite() {
-                continue;
-            }
-
-            mid_series.push((
-                idx,
-                LabelAnchor {
-                    timestamp: event.timestamp,
-                    price: quote.mid_price,
-                },
-            ));
-        }
-
+    /// Compute labels from a pre-built mid-price series (useful for streaming ingestion).
+    pub fn compute_from_mid_series(&self, mid_series: &[MidPriceAnchor]) -> Vec<Label> {
         if mid_series.is_empty() {
             return Vec::new();
         }
+
+        let anchors: Vec<(usize, LabelAnchor)> = mid_series
+            .iter()
+            .map(|anchor| {
+                (
+                    anchor.event_index,
+                    LabelAnchor {
+                        timestamp: anchor.timestamp,
+                        price: anchor.mid_price,
+                    },
+                )
+            })
+            .collect();
 
         let target_outcomes: Vec<Vec<LabelOutcome>> = self
             .params
             .targets
             .iter()
-            .map(|target| compute_target_outcomes(&mid_series, target, self.tick_size))
+            .map(|target| compute_target_outcomes(&anchors, target, self.tick_size))
             .collect();
 
-        mid_series
+        anchors
             .iter()
             .enumerate()
             .map(|(anchor_idx, (event_index, anchor))| {
@@ -152,6 +161,24 @@ fn compute_target_outcomes(
 struct LabelAnchor {
     timestamp: OffsetDateTime,
     price: f64,
+}
+
+/// Compact representation of mid-price quotes used when streaming events.
+#[derive(Debug, Clone, Copy)]
+pub struct MidPriceAnchor {
+    pub event_index: usize,
+    pub timestamp: OffsetDateTime,
+    pub mid_price: f64,
+}
+
+impl MidPriceAnchor {
+    pub const fn new(event_index: usize, timestamp: OffsetDateTime, mid_price: f64) -> Self {
+        Self {
+            event_index,
+            timestamp,
+            mid_price,
+        }
+    }
 }
 
 /// Train/validation/test designation assigned strictly in chronological order.

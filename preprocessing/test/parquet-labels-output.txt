@@ -1,12 +1,12 @@
 === BASIC DATASET INFO ===
-Rows:    805,515
+Rows:    8,687,474
 Columns: 7
 
 === COLUMN OVERVIEW ===
 Name                           Dtype                  Nulls    Null%       Unique
-event_index                    int64                      0    0.00%      805,515
-timestamp_ns                   int64                      0    0.00%      170,829
-anchor_price                   float64                    0    0.00%        1,010
+event_index                    int64                      0    0.00%    8,687,474
+timestamp_ns                   int64                      0    0.00%    1,428,386
+anchor_price                   float64                    0    0.00%        2,048
 outcome_t20                    int8                       0    0.00%            3
 outcome_t40                    int8                       0    0.00%            3
 outcome_t60                    int8                       0    0.00%            3
@@ -16,70 +16,70 @@ outcome_t100                   int8                       0    0.00%            
 
 --- Column: event_index ---
 Dtype: int64
-Total rows: 805,515
+Total rows: 8,687,474
 Nulls: 0 (0.00%)
-Unique non-null values: 805,515
-  Non-null count: 805,515.0
-  Mean:          717,234
-  Std dev:       414,187
+Unique non-null values: 8,687,474
+  Non-null count: 8,687,474.0
+  Mean:          1.35647e+07
+  Std dev:       7.7253e+06
    min:          6
-   1  :          13,910.1
-   5  :          73,719.7
-   25 :          344,266
-   50 :          725,530
-   75 :          1.07919e+06
-   95 :          1.34451e+06
-   99 :          1.40473e+06
-   max:          1,420,533
+   1  :          271,403
+   5  :          1.38016e+06
+   25 :          6.95997e+06
+   50 :          13,633,124
+   75 :          2.02407e+07
+   95 :          2.55655e+07
+   99 :          2.66804e+07
+   max:          26,974,039
 
 --- Column: timestamp_ns ---
 Dtype: int64
-Total rows: 805,515
+Total rows: 8,687,474
 Nulls: 0 (0.00%)
-Unique non-null values: 170,829
-  Non-null count: 805,515.0
-  Mean:          1,703,003,676,780,052,480
-  Std dev:       1.60797e+13
-   min:          1,702,965,600,108,000,000
-   1  :          1,702,968,120,004,000,000
-   5  :          1,702,975,170,104,000,000
-   25 :          1,702,996,496,372,000,000
-   50 :          1,703,003,550,368,000,000
-   75 :          1,703,012,262,524,000,000
-   95 :          1,703,033,377,127,599,872
-   99 :          1,703,047,259,560,000,000
-   max:          1,703,051,990,516,000,000
+Unique non-null values: 1,428,386
+  Non-null count: 8,687,474.0
+  Mean:          1,727,890,729,496,278,784
+  Std dev:       1.45317e+13
+   min:          1,727,848,800,084,000,000
+   1  :          1,727,853,379,179,360,000
+   5  :          1,727,861,766,400,000,000
+   25 :          1,727,884,299,096,000,000
+   50 :          1,727,889,506,052,000,000
+   75 :          1,727,898,354,180,000,000
+   95 :          1,727,921,278,235,800,064
+   99 :          1,727,931,378,104,000,000
+   max:          1,727,935,199,944,000,000
 
 --- Column: anchor_price ---
 Dtype: float64
-Total rows: 805,515
+Total rows: 8,687,474
 Nulls: 0 (0.00%)
-Unique non-null values: 1,010
-  Non-null count: 805,515.0
-  Mean:          17,191.8
-  Std dev:       26.8956
-   min:          17,130.2
-   1  :          17,134.8
-   5  :          17,142.8
-   25 :          17,174.2
-   50 :          17,194
-   75 :          17,209.8
-   95 :          17,241
-   99 :          17,253.4
-   max:          17,258.6
+Unique non-null values: 2,048
+  Non-null count: 8,687,474.0
+  Mean:          19,992.1
+  Std dev:       55.0551
+   min:          19,833.6
+   1  :          19,848.2
+   5  :          19,898
+   25 :          19,950
+   50 :          20,002.2
+   75 :          20,038.4
+   95 :          20,064.6
+   99 :          20,078.2
+   max:          20,089.5
 
 --- Column: outcome_t20 ---
 Dtype: int8
-Total rows: 805,515
+Total rows: 8,687,474
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    0: 553,241 (68.68%)
-    -1: 128,751 (15.98%)
-    1: 123,523 (15.33%)
-  Non-null count: 805,515.0
-  Mean:          -0.00649026
-  Std dev:       0.559591
+    0: 7,662,929 (88.21%)
+    -1: 539,712 (6.21%)
+    1: 484,833 (5.58%)
+  Non-null count: 8,687,474.0
+  Mean:          -0.00631703
+  Std dev:       0.343357
    min:          -1
    1  :          -1
    5  :          -1
@@ -92,38 +92,16 @@ Unique non-null values: 3
 
 --- Column: outcome_t40 ---
 Dtype: int8
-Total rows: 805,515
+Total rows: 8,687,474
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    0: 706,277 (87.68%)
-    -1: 51,722 (6.42%)
-    1: 47,516 (5.90%)
-  Non-null count: 805,515.0
-  Mean:          -0.0052215
-  Std dev:       0.350957
-   min:          -1
-   1  :          -1
-   5  :          -1
-   25 :          0
-   50 :          0
-   75 :          0
-   95 :          1
-   99 :          1
-   max:          1
-
---- Column: outcome_t60 ---
-Dtype: int8
-Total rows: 805,515
-Nulls: 0 (0.00%)
-Unique non-null values: 3
-  Value distribution (including NaN):
-    0: 762,371 (94.64%)
-    -1: 24,008 (2.98%)
-    1: 19,136 (2.38%)
-  Non-null count: 805,515.0
-  Mean:          -0.0060483
-  Std dev:       0.231353
+    0: 8,391,785 (96.60%)
+    -1: 162,620 (1.87%)
+    1: 133,069 (1.53%)
+  Non-null count: 8,687,474.0
+  Mean:          -0.00340156
+  Std dev:       0.184458
    min:          -1
    1  :          -1
    5  :          0
@@ -134,20 +112,42 @@ Unique non-null values: 3
    99 :          1
    max:          1
 
---- Column: outcome_t100 ---
+--- Column: outcome_t60 ---
 Dtype: int8
-Total rows: 805,515
+Total rows: 8,687,474
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    0: 790,883 (98.18%)
-    -1: 10,001 (1.24%)
-    1: 4,631 (0.57%)
-  Non-null count: 805,515.0
-  Mean:          -0.00666654
-  Std dev:       0.134612
+    0: 8,556,489 (98.49%)
+    -1: 81,292 (0.94%)
+    1: 49,693 (0.57%)
+  Non-null count: 8,687,474.0
+  Mean:          -0.00363731
+  Std dev:       0.122736
    min:          -1
-   1  :          -1
+   1  :          0
+   5  :          0
+   25 :          0
+   50 :          0
+   75 :          0
+   95 :          0
+   99 :          0
+   max:          1
+
+--- Column: outcome_t100 ---
+Dtype: int8
+Total rows: 8,687,474
+Nulls: 0 (0.00%)
+Unique non-null values: 3
+  Value distribution (including NaN):
+    0: 8,650,082 (99.57%)
+    -1: 27,854 (0.32%)
+    1: 9,538 (0.11%)
+  Non-null count: 8,687,474.0
+  Mean:          -0.00210832
+  Std dev:       0.065572
+   min:          -1
+   1  :          0
    5  :          0
    25 :          0
    50 :          0
@@ -158,8 +158,8 @@ Unique non-null values: 3
 
 === SAMPLE ROWS ===
    event_index         timestamp_ns  anchor_price  outcome_t20  outcome_t40  outcome_t60  outcome_t100
-0            6  1702965600108000000     17140.875            0            0            0             0
-1            8  1702965600108000000     17140.875            0            0            0             0
-2           10  1702965600108000000     17140.875            0            0            0             0
-3           12  1702965600108000000     17140.875            0            0            0             0
-4           14  1702965600108000000     17140.875            0            0            0             0
+0            6  1727848800084000000      19984.75            0            0            0             0
+1            8  1727848800084000000      19984.75            0            0            0             0
+2           10  1727848800084000000      19984.75            0            0            0             0
+3           12  1727848800084000000      19984.75            0            0            0             0
+4           14  1727848800084000000      19984.75            0            0            0             0

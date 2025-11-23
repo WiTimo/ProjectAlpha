@@ -17,6 +17,16 @@ impl Ewma {
     pub fn new(alpha: f64) -> Self {
         Self { alpha, state: None }
     }
+
+    /// Snapshot the internal state so it can be serialized or inspected.
+    pub fn state(&self) -> Option<f64> {
+        self.state
+    }
+
+    /// Restore the EWMA state, replacing any previously accumulated value.
+    pub fn set_state(&mut self, state: Option<f64>) {
+        self.state = state;
+    }
 }
 
 impl RollingStatistic for Ewma {
@@ -46,6 +56,26 @@ impl WindowedMean {
             window,
             buffer: VecDeque::with_capacity(window),
             sum: 0.0,
+        }
+    }
+
+    /// Return the buffered samples in chronological order for serialization.
+    pub fn values(&self) -> Vec<f64> {
+        self.buffer.iter().copied().collect()
+    }
+
+    /// Replace the rolling window contents with pre-recorded samples.
+    pub fn seed(&mut self, samples: &[f64]) {
+        self.buffer.clear();
+        self.sum = 0.0;
+        if self.window == 0 || samples.is_empty() {
+            return;
+        }
+        let keep = samples.len().min(self.window);
+        let start = samples.len() - keep;
+        for value in &samples[start..] {
+            self.buffer.push_back(*value);
+            self.sum += *value;
         }
     }
 }

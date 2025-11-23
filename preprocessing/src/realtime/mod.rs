@@ -13,11 +13,11 @@ use time::OffsetDateTime;
 
 use crate::config::NormalizationConfig;
 use crate::domain::events::{QuoteEvent, TradeEvent};
-use crate::domain::{Bar, BarAccumulator, BarKey, MarketEvent, MarketEventKind, Resolution};
+use crate::domain::{MarketEvent, MarketEventKind, Resolution};
 use crate::io::parser::{QuoteState, parse_l1_line, parse_l2_line};
-use crate::pipeline::{CoreFeatureExtractor, CoreFeatureRow};
+use crate::normalization::CausalScalerState;
+use crate::pipeline::{CoreFeatureRow, StreamingFeatureEngine};
 use crate::realtime::tail::FileTail;
-use crate::utils::time::align_to_resolution;
 
 /// Plan entry describing a resolution that should be emitted in realtime.
 #[derive(Debug, Clone)]
@@ -36,6 +36,10 @@ pub struct RealtimeConfig {
     pub plan: Vec<ResolutionPlanEntry>,
     pub tick_size: f64,
     pub normalization: NormalizationConfig,
+    /// Number of initial base-resolution bars to discard to allow normalization statistics to stabilize.
+    pub warmup_bars: usize,
+    pub normalization_state: HashMap<Resolution, CausalScalerState>,
+    pub session_reset_gap_ns: i128,
 }
 
 /// Streaming feature payload emitted by the realtime preprocessor.
@@ -57,6 +61,10 @@ pub struct RealtimePreprocessor {
     base_resolution: Resolution,
     extra_resolutions: Vec<Resolution>,
     extra_feature_cache: HashMap<Resolution, BTreeMap<String, f64>>,
+    warmup_bars: usize,
+    base_bar_count: usize,
+    session_reset_gap_ns: i128,
+    last_base_end_ns: Option<i64>,
 }
 
 impl RealtimePreprocessor {
@@ -71,13 +79,15 @@ impl RealtimePreprocessor {
         let max_levels = plan.iter().map(|entry| entry.levels).max().unwrap_or(1);
         let mut engines = HashMap::new();
         for entry in &plan {
+            let state = cfg.normalization_state.get(&entry.resolution);
             engines.insert(
                 entry.resolution,
-                StreamingFeatureEngine::new(
+                StreamingFeatureEngine::with_scaler_state(
                     entry.resolution,
                     entry.levels,
                     cfg.tick_size,
                     &cfg.normalization,
+                    state,
                 ),
             );
         }
@@ -97,6 +107,10 @@ impl RealtimePreprocessor {
             base_resolution,
             extra_resolutions,
             extra_feature_cache: HashMap::new(),
+            warmup_bars: cfg.warmup_bars,
+            base_bar_count: 0,
+            session_reset_gap_ns: cfg.session_reset_gap_ns,
+            last_base_end_ns: None,
         }
     }
 
@@ -210,8 +224,14 @@ impl RealtimePreprocessor {
         }
     }
     fn build_payload(&mut self, row: CoreFeatureRow) -> Option<RealtimeFeaturePayload> {
+        self.handle_session_gap(&row);
+        // Increment bar count for base resolution and enforce normalization warmup discard if configured.
+        self.base_bar_count += 1;
+        if self.base_bar_count <= self.warmup_bars {
+            return None; // discard during warmup window
+        }
         if !self.extra_resolutions_ready() {
-            return None;
+            return None; // maintain existing multi-resolution readiness behavior
         }
         let mut features = build_feature_map(&row);
         for resolution in &self.extra_resolutions {
@@ -229,6 +249,19 @@ impl RealtimePreprocessor {
                 .iter()
                 .all(|res| self.extra_feature_cache.contains_key(res))
     }
+
+    fn handle_session_gap(&mut self, row: &CoreFeatureRow) {
+        if self.session_reset_gap_ns > 0 {
+            if let Some(last_end) = self.last_base_end_ns {
+                let delta = (row.start_ns as i128) - (last_end as i128);
+                if delta > self.session_reset_gap_ns {
+                    self.extra_feature_cache.clear();
+                    self.base_bar_count = 0;
+                }
+            }
+        }
+        self.last_base_end_ns = Some(row.end_ns);
+    }
 }
 
 impl RealtimeFeaturePayload {
@@ -240,74 +273,6 @@ impl RealtimeFeaturePayload {
             end_timestamp_ns: row.end_ns,
             features,
         }
-    }
-}
-
-struct StreamingFeatureEngine {
-    resolution: Resolution,
-    levels: usize,
-    extractor: CoreFeatureExtractor,
-    accumulator: Option<BarAccumulator>,
-}
-
-impl StreamingFeatureEngine {
-    fn new(
-        resolution: Resolution,
-        levels: usize,
-        tick_size: f64,
-        normalization: &NormalizationConfig,
-    ) -> Self {
-        let extractor = CoreFeatureExtractor::new(tick_size, normalization);
-        Self {
-            resolution,
-            levels,
-            extractor,
-            accumulator: None,
-        }
-    }
-
-    fn ingest_event(&mut self, event: &MarketEvent) -> Vec<CoreFeatureRow> {
-        self.ensure_accumulator(event.timestamp);
-        let mut rows = Vec::new();
-
-        while let Some(acc) = self.accumulator.as_ref() {
-            if event.timestamp < acc.end {
-                break;
-            }
-            if let Some(bar) = self.advance_window() {
-                rows.extend(self.extractor.compute(std::slice::from_ref(&bar)));
-            }
-        }
-
-        if let Some(acc) = self.accumulator.as_mut() {
-            acc.ingest(event);
-        }
-
-        rows
-    }
-
-    fn ensure_accumulator(&mut self, timestamp: OffsetDateTime) {
-        if self.accumulator.is_some() {
-            return;
-        }
-        let start = align_to_resolution(timestamp, self.resolution);
-        let end = start + self.resolution.bar_duration();
-        let key = BarKey::new(self.resolution, 0);
-        self.accumulator = Some(BarAccumulator::new(key, start, end, self.levels));
-    }
-
-    fn advance_window(&mut self) -> Option<Bar> {
-        let acc = self.accumulator.take()?;
-        let next_start = acc.end;
-        let next_index = acc.key.index + 1;
-        let next_end = next_start + self.resolution.bar_duration();
-        self.accumulator = Some(BarAccumulator::new(
-            BarKey::new(self.resolution, next_index),
-            next_start,
-            next_end,
-            self.levels,
-        ));
-        acc.finalize()
     }
 }
 
