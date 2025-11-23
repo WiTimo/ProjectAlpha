@@ -21,6 +21,7 @@ def generate_epoch_report(
     targets: np.ndarray,
     config: dict,
     trade_summary: Dict[str, float],
+    trade_sweep: Optional[Dict[str, object]],
     logistic_metrics: Optional[Dict[str, float]],
     logistic_trade_summary: Optional[Dict[str, float]],
 ) -> str:
@@ -69,6 +70,8 @@ def generate_epoch_report(
     if logistic_metrics:
         auc_line += f" | LogReg: {logistic_metrics['auc']:.4f}"
     lines.append(auc_line)
+    if logistic_metrics and "corr_with_tcn" in logistic_metrics:
+        lines.append(f" Prob Corr (TCN vs LR): {logistic_metrics['corr_with_tcn']:.3f}")
 
     threshold = config['trade_simulation']['threshold']
     target_ticks = config['trade_simulation']['target_ticks']
@@ -106,6 +109,16 @@ def generate_epoch_report(
                 **logistic_trade_summary
             )
         )
+
+    if trade_sweep and trade_sweep.get("best"):
+        best = trade_sweep["best"]
+        min_trades = trade_sweep.get("min_trades", 0)
+        lines.append("\n [THRESHOLD SWEEP] (diagnostic)")
+        lines.append(
+            f" Best Thr {best['threshold']:.2f}: Entries {best['entries']:.0f} | Exp {best['expectancy']:+.2f} | Entry Rate {best['entry_rate']:.2f}%"
+        )
+        if min_trades and best["entries"] < min_trades:
+            lines.append(f" NOTE: Best threshold below min trade target ({int(min_trades)}), results likely noisy.")
 
     lines.append(f"{'='*80}\n")
     

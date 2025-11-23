@@ -4,6 +4,7 @@ import logging
 import sys
 from pathlib import Path
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from src.utils import load_config, setup_logging
 from src.definitions import FEATURE_SET_COLUMNS, NUM_TARGET_CLASSES
@@ -115,7 +116,8 @@ def main():
         num_classes=NUM_TARGET_CLASSES,
         num_channels=channel_sizes,
         kernel_size=config['model']['kernel_size'],
-        dropout=config['model']['dropout']
+        dropout=config['model']['dropout'],
+        dilation_base=config['model'].get('dilation_base', 2),
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -123,26 +125,46 @@ def main():
         lr=float(config['training']['learning_rate']),
         weight_decay=float(config['training']['weight_decay'])
     )
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=0.5,
+        patience=1,
+        min_lr=float(config['training'].get('min_learning_rate', 1e-5)),
+    )
 
     total_counts = np.zeros(NUM_TARGET_CLASSES)
     for e in train_entries:
         total_counts += e.target_counts.sum(axis=0)
         
     class_weights = get_class_weights(total_counts, config['training']['class_weight_power']).to(device)
-    logging.info(f"Class Weights: {class_weights.cpu().numpy()}")
+    total_labels = total_counts.sum()
+    pos_rate = (total_counts[-1] / max(total_labels, 1)) * 100.0
+    logging.info(
+        "Class Weights: %s | Train label coverage: %d samples (Up %.2f%%)",
+        class_weights.cpu().numpy(),
+        int(total_labels),
+        pos_rate,
+    )
 
     # 8. Training Loop
     epochs = config['training']['epochs']
     patience = config['training']['patience']
+    baseline_margin = float(config['training'].get('baseline_margin', 0.01))
+    baseline_patience = int(config['training'].get('baseline_patience', 3))
+    min_epochs = int(config['training'].get('min_epochs', 3))
     best_auc = 0.0
+    best_epoch = 0
     patience_counter = 0
+    baseline_auc = None
+    below_baseline_epochs = 0
 
     logging.info("Starting training...")
     for epoch in range(1, epochs + 1):
         train_loss = train_epoch(model, train_loader, optimizer, device, class_weights, config)
         
         # New evaluation call
-        auc = evaluate_and_log(
+        auc, logistic_auc = evaluate_and_log(
             model,
             val_loader,
             device,
@@ -153,9 +175,16 @@ def main():
             trade_simulator=trade_simulator,
             logistic_model=logistic_model,
         )
+
+        if logistic_auc is not None and baseline_auc is None:
+            baseline_auc = logistic_auc
+            logging.info(f"Logistic baseline (val) AUC reference: {baseline_auc:.4f}")
+
+        meets_baseline = baseline_auc is None or auc >= baseline_auc - baseline_margin
         
-        if auc > best_auc + config['training']['min_delta']:
+        if auc > best_auc + config['training']['min_delta'] and meets_baseline:
             best_auc = auc
+            best_epoch = epoch
             patience_counter = 0
             path = Path(config['paths']['model_export_dir']) / "best_model.pt"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,11 +192,41 @@ def main():
             logging.info(f"--> New Best Model Saved (AUC: {best_auc:.4f})")
         else:
             patience_counter += 1
-            if patience_counter >= patience:
-                logging.info(f"Early stopping triggered at epoch {epoch}")
-                break
 
-    logging.info(f"Training Complete. Best Val AUC: {best_auc:.4f}")
+        scheduler.step(auc)
+        current_lr = optimizer.param_groups[0]["lr"]
+        logging.info(f"Epoch {epoch} complete | Val AUC: {auc:.4f} | LR now {current_lr:.2e}")
+
+        if baseline_auc is not None and not meets_baseline:
+            below_baseline_epochs += 1
+        else:
+            below_baseline_epochs = 0
+
+        if patience_counter >= patience:
+            logging.info(f"Early stopping triggered at epoch {epoch}")
+            break
+
+        if (
+            baseline_auc is not None
+            and epoch >= min_epochs
+            and below_baseline_epochs >= baseline_patience
+            and best_auc < baseline_auc - baseline_margin
+        ):
+            logging.info(
+                "Stopping: TCN Val AUC has stayed below logistic baseline (%.4f) for %d epochs",
+                baseline_auc,
+                baseline_patience,
+            )
+            break
+
+    if baseline_auc is not None and best_auc < baseline_auc - baseline_margin:
+        logging.info(
+            "Run finished: best TCN AUC %.4f is below logistic baseline %.4f; model not promoted.",
+            best_auc,
+            baseline_auc,
+        )
+    else:
+        logging.info(f"Training Complete. Best Val AUC: {best_auc:.4f} (epoch {best_epoch})")
 
 if __name__ == "__main__":
     main()

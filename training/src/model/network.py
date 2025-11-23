@@ -36,13 +36,21 @@ class TemporalBlock(nn.Module):
         return self.relu2(out[:, :, :res.size(2)] + res)
 
 class DilatedTCN(nn.Module):
-    def __init__(self, num_inputs, num_classes, num_channels, kernel_size=2, dropout=0.2):
+    def __init__(
+        self,
+        num_inputs,
+        num_classes,
+        num_channels,
+        kernel_size=2,
+        dropout=0.2,
+        dilation_base: int = 2,
+    ):
         super(DilatedTCN, self).__init__()
         layers = []
         num_levels = len(num_channels)
         
         for i in range(num_levels):
-            dilation_size = 2 ** i
+            dilation_size = (dilation_base ** i) if dilation_base > 1 else 1
             in_channels = num_inputs if i == 0 else num_channels[i-1]
             out_channels = num_channels[i]
             

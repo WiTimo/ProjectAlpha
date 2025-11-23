@@ -127,12 +127,12 @@ class InMemoryMultiResolutionDataset(Dataset):
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         file_idx, offset = self._locate(index)
 
+        entry = self.entries[file_idx]
         target_idx = int(entry.valid_targets[offset])
         end = target_idx + 1
         start = end - self.seq_len
 
         windows = []
-        entry = self.entries[file_idx]
         for res in self.resolution_order:
             data = entry.feature_arrays[res]
             windows.append(data[start:end])

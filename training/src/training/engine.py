@@ -61,8 +61,12 @@ def evaluate_and_log(
     all_probs = []
     all_targets = []
     logistic_probs = []
+    logistic_auc = None
     prediction_records: list[PredictionRecord] = []
     
+    sweep_cfg = config.get("trade_simulation", {}).get("threshold_sweep", [])
+    min_trades = int(config.get("trade_simulation", {}).get("min_trades", 0))
+
     with torch.no_grad():
         for batch in tqdm(loader, desc="Validating", leave=False, ncols=100):
             if len(batch) == 3:
@@ -107,7 +111,7 @@ def evaluate_and_log(
     
     if not all_targets:
         logging.warning("Validation set empty!")
-        return 0.0
+        return 0.0, None
         
     probs_concat = np.concatenate(all_probs)
     targets_concat = np.concatenate(all_targets)
@@ -123,8 +127,23 @@ def evaluate_and_log(
         except ValueError:
             log_auc = 0.5
         logistic_metrics = {"accuracy": log_acc, "auc": log_auc}
+        logistic_auc = log_auc
+
+        try:
+            corr = float(np.corrcoef(logistic_concat, probs_concat[:, 1])[0, 1])
+            if np.isnan(corr):
+                corr = 0.0
+        except Exception:
+            corr = 0.0
+        logistic_metrics["corr_with_tcn"] = corr
+        if corr < -0.1:
+            logging.warning(
+                "Negative correlation between TCN and logistic outputs (corr=%.3f). Check label polarity/sequence alignment.",
+                corr,
+            )
     else:
         logistic_concat = None
+        logistic_metrics = None
 
     trade_summary = {
         "entries": 0.0,
@@ -144,6 +163,25 @@ def evaluate_and_log(
         trade_summary = trade_simulator.simulate(prediction_records, prob_field="tcn_prob")
     if trade_simulator and logistic_metrics and prediction_records:
         logistic_trade_summary = trade_simulator.simulate(prediction_records, prob_field="logistic_prob")
+
+    sweep_result = None
+    if trade_simulator and prediction_records and sweep_cfg:
+        sweep_metrics = []
+        for thr in sweep_cfg:
+            summary = trade_simulator.simulate(
+                prediction_records, prob_field="tcn_prob", threshold=float(thr)
+            )
+            summary["threshold"] = float(thr)
+            sweep_metrics.append(summary)
+
+        if sweep_metrics:
+            sweep_metrics.sort(key=lambda item: item["expectancy"], reverse=True)
+            sweep_result = {
+                "min_trades": float(min_trades),
+                "best": next(
+                    (m for m in sweep_metrics if m["entries"] >= min_trades), sweep_metrics[0]
+                ),
+            }
     
     # Generate the rich report
     report_str, auc = generate_epoch_report(
@@ -154,6 +192,7 @@ def evaluate_and_log(
         targets_concat, 
         config,
         trade_summary,
+        sweep_result,
         logistic_metrics,
         logistic_trade_summary,
     )
@@ -161,4 +200,4 @@ def evaluate_and_log(
     # Print the report directly to stdout/log
     print(report_str)
     
-    return auc
+    return auc, logistic_auc

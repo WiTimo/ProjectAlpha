@@ -40,7 +40,13 @@ class TradeSimulator:
             self.entry_offsets.append(cumulative)
             cumulative += entry.rows
 
-    def simulate(self, records: Sequence[PredictionRecord], prob_field: str) -> Dict[str, float]:
+    def simulate(
+        self,
+        records: Sequence[PredictionRecord],
+        prob_field: str,
+        threshold: float | None = None,
+    ) -> Dict[str, float]:
+        cutoff = self.threshold if threshold is None else threshold
         events = []
         for rec in records:
             prob = getattr(rec, prob_field, None)
@@ -61,7 +67,7 @@ class TradeSimulator:
         mismatches = 0
         trade_durations: List[int] = []
         for _, abs_idx, rec, prob in events:
-            if prob <= self.threshold:
+            if prob <= cutoff:
                 continue
             if abs_idx <= open_until:
                 blocked += 1

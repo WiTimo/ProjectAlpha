@@ -19,14 +19,18 @@ data:
 training:
   target: "t40" # Primary target horizon
   primary_only: true # Ignore other targets if true
-  sequence_len: 96
+  sequence_len: 64
   batch_size: 96
   epochs: 20
-  learning_rate: 3.0e-4
-  weight_decay: 5.0e-4
+  learning_rate: 1.0e-4
+  min_learning_rate: 5.0e-6
+  weight_decay: 5.0e-3
   max_gradient_norm: 1.0
-  patience: 6
-  min_delta: 5.0e-4
+  patience: 4
+  min_delta: 1.0e-3
+  baseline_margin: 0.01
+  baseline_patience: 3
+  min_epochs: 3
   
   # Loss configuration
   class_weight_power: 0.4
@@ -41,15 +45,17 @@ chunking:
   seed: 1337
 
 model:
-  hidden_dim: 64
-  layers: 3
+  hidden_dim: 48
+  layers: 2
   stacks: 1
   kernel_size: 5
   dilation_base: 2
-  dropout: 0.25
+  dropout: 0.5
 
 trade_simulation:
-  threshold: 0.55
+  threshold: 0.50
+  threshold_sweep: [0.40, 0.45, 0.50, 0.55, 0.60]
+  min_trades: 50
   target_ticks: 40.0
   stop_ticks: 40.0
   tick_size: 0.25
