@@ -177,6 +177,8 @@ pub struct TargetSpec {
     pub down_ticks: f64,
     #[serde(default = "LabelConfig::default_lookahead_events")]
     pub lookahead_events: usize,
+    #[serde(default)]
+    pub horizon_seconds: Option<u64>,
 }
 
 impl TargetSpec {
@@ -204,7 +206,10 @@ impl LabelConfig {
         for target in &self.targets {
             anyhow::ensure!(target.up_ticks > 0.0, "up_ticks must be > 0");
             anyhow::ensure!(target.down_ticks > 0.0, "down_ticks must be > 0");
-            anyhow::ensure!(target.lookahead_events > 0, "lookahead_events must be > 0");
+            anyhow::ensure!(
+                target.lookahead_events > 0 || target.horizon_seconds.is_some(),
+                "either lookahead_events or horizon_seconds must be set and positive"
+            );
         }
         Ok(())
     }
@@ -220,24 +225,28 @@ impl LabelConfig {
                 up_ticks: 20.0,
                 down_ticks: 20.0,
                 lookahead_events: 1200,
+                horizon_seconds: None,
             },
             TargetSpec {
                 name: "t40".into(),
                 up_ticks: 40.0,
                 down_ticks: 40.0,
                 lookahead_events: 2400,
+                horizon_seconds: Some(600),
             },
             TargetSpec {
                 name: "t60".into(),
                 up_ticks: 60.0,
                 down_ticks: 60.0,
                 lookahead_events: 3600,
+                horizon_seconds: Some(600),
             },
             TargetSpec {
                 name: "t100".into(),
                 up_ticks: 100.0,
                 down_ticks: 100.0,
                 lookahead_events: 6000,
+                horizon_seconds: Some(600),
             },
         ]
     }

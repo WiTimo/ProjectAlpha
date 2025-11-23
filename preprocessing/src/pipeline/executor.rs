@@ -461,6 +461,7 @@ fn log_stage(resolution: Resolution, bar_seconds: u64, aggregate_from: Option<Re
     }
 }
 
+
 fn log_label_stats(stats: &LabelStats, input_file: &Path) {
     if stats.per_target.is_empty() {
         println!(
@@ -479,9 +480,10 @@ fn log_label_stats(stats: &LabelStats, input_file: &Path) {
         let denom = target_stats.total.max(1) as f64;
         let up_pct = (target_stats.hit_up as f64 / denom) * 100.0;
         let down_pct = (target_stats.hit_down as f64 / denom) * 100.0;
+        let flat_pct = (target_stats.flat as f64 / denom) * 100.0;
         println!(
-            "  - {} -> labels={} (↑ {:.2}% ↓ {:.2}% no-hit={})",
-            target_stats.name, target_stats.total, up_pct, down_pct, target_stats.no_hit
+            "  - {} -> labels={} (up {:.2}% down {:.2}% flat {:.2}%)",
+            target_stats.name, target_stats.total, up_pct, down_pct, flat_pct
         );
     }
 }
@@ -524,7 +526,7 @@ fn write_labels_parquet(path: &Path, labels: &[Label], targets: &[TargetSpec]) -
                 .outcomes
                 .get(idx)
                 .copied()
-                .unwrap_or(LabelOutcome::NoHit);
+                .unwrap_or(LabelOutcome::Flat);
             encode_outcome(outcome)
         }));
         columns.push(Arc::new(arr) as ArrayRef);
@@ -543,9 +545,9 @@ fn write_labels_parquet(path: &Path, labels: &[Label], targets: &[TargetSpec]) -
 
 const fn encode_outcome(outcome: LabelOutcome) -> i8 {
     match outcome {
-        LabelOutcome::HitUp => 1,
-        LabelOutcome::HitDown => -1,
-        LabelOutcome::NoHit => 0,
+        LabelOutcome::HitUp => 2,
+        LabelOutcome::Flat => 1,
+        LabelOutcome::HitDown => 0,
     }
 }
 
@@ -689,6 +691,7 @@ mod tests {
             up_ticks: 20.0,
             down_ticks: 20.0,
             lookahead_events: 10,
+            horizon_seconds: None,
         }];
         let labels = vec![
             Label::new(0, ts, 100.0, vec![LabelOutcome::HitUp]),
@@ -740,8 +743,8 @@ mod tests {
             assert!((price - label.anchor_price).abs() < f64::EPSILON);
         }
 
-        assert_eq!(outcomes.value(0), 1);
-        assert_eq!(outcomes.value(1), -1);
+        assert_eq!(outcomes.value(0), 2);
+        assert_eq!(outcomes.value(1), 0);
         Ok(())
     }
 }

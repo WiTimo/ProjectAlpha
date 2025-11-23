@@ -96,6 +96,7 @@ def main():
     feature_set = config['data']['feature_set']
     base_cols = FEATURE_SET_COLUMNS[feature_set]
     resolutions = config['data']['resolutions']
+    lookahead_bars = int(config['training'].get('label_lookahead_bars', 0))
     
     col_map = {}
     total_input_channels = 0
@@ -115,7 +116,13 @@ def main():
     logging.info(f"Found {len(stems)} source files.")
 
     # 3. Cache & Preprocess (Streaming)
-    entries = cache_streaming_files(stems, config, resolutions, col_map)
+    entries = cache_streaming_files(
+        stems,
+        config,
+        resolutions,
+        col_map,
+        lookahead_bars=lookahead_bars if lookahead_bars > 0 else None,
+    )
     logging.info(f"Successfully cached {len(entries)} files.")
     
     if not entries:
@@ -128,12 +135,15 @@ def main():
     total_labels = int(label_hist.sum())
     if total_labels > 0:
         up_ratio = (label_hist[-1] / total_labels) * 100
+        flat_ratio = (label_hist[1] / total_labels) * 100
         logging.info(
-            "Label coverage: %d usable anchors | Down=%d Up=%d (Up %.2f%%)",
+            "Label coverage: %d usable anchors | Down=%d Flat=%d Up=%d (Up %.2f%% Flat %.2f%%)",
             total_labels,
             int(label_hist[0]),
+            int(label_hist[1]),
             int(label_hist[-1]),
             up_ratio,
+            flat_ratio,
         )
 
     # 4. Split Train/Val/Test
@@ -173,6 +183,7 @@ def main():
             target_ticks=float(config['trade_simulation']['target_ticks']),
             stop_ticks=float(config['trade_simulation']['stop_ticks']),
             tick_size=float(config['trade_simulation']['tick_size']),
+            lookahead_bars=lookahead_bars if lookahead_bars > 0 else None,
         )
 
     # 7. Model Setup
@@ -209,12 +220,14 @@ def main():
         
     class_weights = get_class_weights(total_counts, config['training']['class_weight_power']).to(device)
     total_labels = total_counts.sum()
-    pos_rate = (total_counts[-1] / max(total_labels, 1)) * 100.0
+    up_rate = (total_counts[-1] / max(total_labels, 1)) * 100.0
+    flat_rate = (total_counts[1] / max(total_labels, 1)) * 100.0
     logging.info(
-        "Class Weights: %s | Train label coverage: %d samples (Up %.2f%%)",
+        "Class Weights: %s | Train label coverage: %d samples (Up %.2f%% Flat %.2f%%)",
         class_weights.cpu().numpy(),
         int(total_labels),
-        pos_rate,
+        up_rate,
+        flat_rate,
     )
 
     # 8. Training Loop

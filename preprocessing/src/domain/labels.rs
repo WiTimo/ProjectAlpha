@@ -8,17 +8,26 @@ pub enum LabelOutcome {
     HitUp,
     /// Price hit the negative target before the positive one.
     HitDown,
-    /// Neither target was reached within the allowed lookahead horizon.
-    NoHit,
+    /// Neither target was reached within the allowed lookahead horizon or both sides hit simultaneously.
+    Flat,
 }
 
 impl LabelOutcome {
-    /// Map the outcome to a binary value where up = 1 and down = 0. Returns `None` for `NoHit`.
+    /// Map the outcome to a binary value where up = 1 and down = 0. Returns `None` for `Flat`.
     pub const fn as_binary(self) -> Option<u8> {
         match self {
             LabelOutcome::HitUp => Some(1),
             LabelOutcome::HitDown => Some(0),
-            LabelOutcome::NoHit => None,
+            LabelOutcome::Flat => None,
+        }
+    }
+
+    /// Map to 3-class encoding {0=down, 1=flat, 2=up}.
+    pub const fn as_triclass(self) -> i8 {
+        match self {
+            LabelOutcome::HitDown => 0,
+            LabelOutcome::Flat => 1,
+            LabelOutcome::HitUp => 2,
         }
     }
 }
@@ -55,7 +64,7 @@ pub struct TargetLabelStats {
     pub total: usize,
     pub hit_up: usize,
     pub hit_down: usize,
-    pub no_hit: usize,
+    pub flat: usize,
 }
 
 impl TargetLabelStats {
@@ -65,7 +74,7 @@ impl TargetLabelStats {
             total: 0,
             hit_up: 0,
             hit_down: 0,
-            no_hit: 0,
+            flat: 0,
         }
     }
 
@@ -98,7 +107,7 @@ impl LabelStats {
                     match outcome {
                         LabelOutcome::HitUp => stats.hit_up += 1,
                         LabelOutcome::HitDown => stats.hit_down += 1,
-                        LabelOutcome::NoHit => stats.no_hit += 1,
+                        LabelOutcome::Flat => stats.flat += 1,
                     }
                 }
             }
@@ -126,7 +135,7 @@ mod tests {
         let labels = vec![
             Label::new(0, ts, 100.0, vec![LabelOutcome::HitUp]),
             Label::new(1, ts, 100.0, vec![LabelOutcome::HitDown]),
-            Label::new(2, ts, 100.0, vec![LabelOutcome::NoHit]),
+            Label::new(2, ts, 100.0, vec![LabelOutcome::Flat]),
         ];
 
         let stats = LabelStats::from_labels(&labels, &["t20".to_string()]);
@@ -135,7 +144,7 @@ mod tests {
         assert_eq!(target_stats.total, 3);
         assert_eq!(target_stats.hit_up, 1);
         assert_eq!(target_stats.hit_down, 1);
-        assert_eq!(target_stats.no_hit, 1);
+        assert_eq!(target_stats.flat, 1);
         assert_eq!(target_stats.positive_ratio(), 1.0 / 3.0);
     }
 }

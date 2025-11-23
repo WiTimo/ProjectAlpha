@@ -26,6 +26,9 @@ training:
   min_learning_rate: 5.0e-6
   weight_decay: 1.0e-2
   max_gradient_norm: 1.0
+  # Limit how far ahead labels can look when deciding which side (up/down) hits first.
+  # 600s horizon on 1s bars ~ 600 lookahead.
+  label_lookahead_bars: 600
   patience: 4
   min_delta: 1.0e-3
   baseline_margin: 0.01

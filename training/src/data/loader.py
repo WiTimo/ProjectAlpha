@@ -81,19 +81,20 @@ def load_resolution_slice(stem: str, root: Path, res: str, cols: List[str]) -> O
         return None
 
 
-def derive_binary_targets(
+def derive_triclass_targets(
     frame: pd.DataFrame,
     tick_size: float,
     target_ticks: float,
     stop_ticks: float,
+    lookahead_bars: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute binary (down/up) labels by walking forward until +/- target_ticks."""
+    """Compute tri-class (down/flat/up) labels by walking forward until +/- target_ticks within a bounded horizon."""
     closes = frame["mid_close_price"].to_numpy(dtype=np.float64)
     highs = frame["mid_high_price"].to_numpy(dtype=np.float64)
     lows = frame["mid_low_price"].to_numpy(dtype=np.float64)
 
     n = len(frame)
-    labels = np.full(n, -1, dtype=np.int8)
+    labels = np.full(n, 1, dtype=np.int8)  # default flat class
     valid_mask = np.zeros(n, dtype=bool)
     exit_indices = np.full(n, -1, dtype=np.int32)
 
@@ -106,6 +107,9 @@ def derive_binary_targets(
     pending_down: List[Tuple[float, int]] = []
     next_up = np.full(n, -1, dtype=np.int32)
     next_down = np.full(n, -1, dtype=np.int32)
+    lookahead = n if not lookahead_bars or lookahead_bars <= 0 else lookahead_bars
+    expirations: list[list[int]] = [[] for _ in range(n)]
+    expired = np.zeros(n, dtype=bool)
 
     for idx in range(n):
         high = highs[idx]
@@ -113,37 +117,47 @@ def derive_binary_targets(
 
         while pending_up and pending_up[0][0] <= high:
             _, anchor = heapq.heappop(pending_up)
-            if next_up[anchor] == -1:
-                next_up[anchor] = idx
+            if expired[anchor] or next_up[anchor] != -1:
+                continue
+            next_up[anchor] = idx
 
         neg_low = -low
         while pending_down and pending_down[0][0] <= neg_low:
             _, anchor = heapq.heappop(pending_down)
-            if next_down[anchor] == -1:
-                next_down[anchor] = idx
+            if expired[anchor] or next_down[anchor] != -1:
+                continue
+            next_down[anchor] = idx
 
         anchor_price = closes[idx]
         heapq.heappush(pending_up, (anchor_price + up_delta, idx))
         heapq.heappush(pending_down, (-(anchor_price - down_delta), idx))
+
+        expiry_idx = min(n - 1, idx + lookahead)
+        expirations[expiry_idx].append(idx)
+        for anchor in expirations[idx]:
+            expired[anchor] = True
 
     for idx in range(n):
         up_hit = next_up[idx]
         down_hit = next_down[idx]
 
         if up_hit == -1 and down_hit == -1:
+            exit_indices[idx] = expiry_idx
+            valid_mask[idx] = True
             continue
 
         if up_hit == -1:
-            labels[idx] = 0
+            labels[idx] = 0  # down
             exit_indices[idx] = down_hit
         elif down_hit == -1:
-            labels[idx] = 1
+            labels[idx] = 2  # up
             exit_indices[idx] = up_hit
         else:
             if up_hit == down_hit:
-                continue
-            if up_hit < down_hit:
-                labels[idx] = 1
+                labels[idx] = 1  # flat tie
+                exit_indices[idx] = up_hit
+            elif up_hit < down_hit:
+                labels[idx] = 2
                 exit_indices[idx] = up_hit
             else:
                 labels[idx] = 0
@@ -159,6 +173,7 @@ def cache_streaming_files(
     config: Dict[str, Any],
     resolution_plan: List[str],
     feature_cols_map: Dict[str, List[str]],
+    lookahead_bars: int | None = None,
 ) -> List[StreamingFileEntry]:
     
     feature_root = Path(config['paths']['feature_root'])
@@ -211,11 +226,12 @@ def cache_streaming_files(
         for res in list(resolution_tables.keys()):
             resolution_tables[res] = resolution_tables[res].iloc[valid_indices].reset_index(drop=True)
 
-        labels, valid_targets, exit_indices = derive_binary_targets(
+        labels, valid_targets, exit_indices = derive_triclass_targets(
             base_frame,
             tick_size,
             target_ticks,
             stop_ticks,
+            lookahead_bars=lookahead_bars,
         )
 
         if not valid_targets.any():
@@ -225,7 +241,7 @@ def cache_streaming_files(
         # Save to disk
         num_rows = len(base_frame)
         targets = np.zeros((num_rows, 1), dtype=np.int8)
-        targets[:, 0] = np.where(valid_targets, labels, 0)
+        targets[:, 0] = np.where(valid_targets, labels, 1)
 
         mask_path = cache_dir / f"{stem}_target_mask.npy"
         np.save(mask_path, valid_targets.astype(np.bool_))

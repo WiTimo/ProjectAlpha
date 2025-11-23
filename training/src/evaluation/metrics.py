@@ -1,8 +1,10 @@
 from typing import Dict, Optional
 
-import torch
 import numpy as np
+import torch
 from sklearn.metrics import accuracy_score, roc_auc_score
+
+from src.definitions import DOWN_CLASS_INDEX, FLAT_CLASS_INDEX, UP_CLASS_INDEX
 
 
 def get_class_weights(count_dict: np.ndarray, power: float) -> torch.Tensor:
@@ -12,6 +14,7 @@ def get_class_weights(count_dict: np.ndarray, power: float) -> torch.Tensor:
     w = total / (len(count_dict) * np.maximum(count_dict, 1))
     w = w ** power
     return torch.from_numpy(w.astype(np.float32))
+
 
 def generate_epoch_report(
     epoch: int,
@@ -24,60 +27,60 @@ def generate_epoch_report(
     trade_sweep: Optional[Dict[str, object]],
     logistic_metrics: Optional[Dict[str, float]],
     logistic_trade_summary: Optional[Dict[str, float]],
-) -> str:
-    """
-    Generates a formatted ASCII report for the epoch.
-    """
-    # 1. Prediction Statistics
-    # Focus on the "UP" class (Index 1)
-    up_probs = probs[:, 1]
-    pred_mean = np.mean(up_probs)
-    pred_std = np.std(up_probs)
-    pred_max = np.max(up_probs)
+) -> tuple[str, float]:
+    """Generate a formatted ASCII report for the epoch."""
+    move_probs = probs[:, DOWN_CLASS_INDEX] + probs[:, UP_CLASS_INDEX]
+    pred_mean = float(np.mean(move_probs))
+    pred_std = float(np.std(move_probs))
+    pred_max = float(np.max(move_probs))
 
-    # 3. Classification Metrics (Global)
-    hard_preds = (up_probs >= 0.5).astype(int)
+    hard_preds = np.argmax(probs, axis=1)
     acc = accuracy_score(targets, hard_preds)
+
+    move_targets = (targets != FLAT_CLASS_INDEX).astype(int)
     try:
-        auc = roc_auc_score(targets, up_probs)
+        auc = roc_auc_score(move_targets, move_probs)
     except ValueError:
         auc = 0.5
 
-    # 4. Construct Report
-    lines = []
-    lines.append(f"\n{'='*80}")
+    lines: list[str] = []
+    lines.append(f"\n{'=' * 80}")
     lines.append(f" EPOCH {epoch} REPORT ")
-    lines.append(f"{'='*80}")
-    
-    # Model Health
+    lines.append(f"{'=' * 80}")
+
     overfit_ratio = val_loss / (train_loss + 1e-6)
-    health_status = "HEALTHY" if 0.9 < overfit_ratio < 1.1 else ("OVERFITTING" if overfit_ratio > 1.1 else "UNDERFITTING")
-    
+    health_status = (
+        "HEALTHY"
+        if 0.9 < overfit_ratio < 1.1
+        else ("OVERFITTING" if overfit_ratio > 1.1 else "UNDERFITTING")
+    )
+
     lines.append(f" [MODEL HEALTH] Status: {health_status}")
     lines.append(f" Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Ratio: {overfit_ratio:.2f}")
-    lines.append(f" Confidence: {pred_mean:.4f} +/- {pred_std:.4f} (Max: {pred_max:.4f})")
+    lines.append(f" Move Prob: {pred_mean:.4f} +/- {pred_std:.4f} (Max: {pred_max:.4f})")
     if pred_std < 0.05:
-        lines.append(f" WARNING: Model is outputting constant probabilities (collapsed).")
+        lines.append(" WARNING: Model is outputting constant move probabilities (collapsed).")
 
-    # Metrics
-    lines.append(f" [CLASSIFICATION] (Validation)")
-    acc_line = f" Accuracy:   {acc*100:.2f}%"
+    lines.append(" [CLASSIFICATION] (Validation)")
+    acc_line = f" Accuracy (3-class argmax): {acc * 100:.2f}%"
     if logistic_metrics:
-        acc_line += f" | LogReg: {logistic_metrics['accuracy']*100:.2f}%"
+        acc_line += f" | LogReg (move/flat): {logistic_metrics['accuracy'] * 100:.2f}%"
     lines.append(acc_line)
 
-    auc_line = f" ROC AUC:    {auc:.4f}"
+    auc_line = f" ROC AUC (move vs flat): {auc:.4f}"
     if logistic_metrics:
         auc_line += f" | LogReg: {logistic_metrics['auc']:.4f}"
     lines.append(auc_line)
     if logistic_metrics and "corr_with_tcn" in logistic_metrics:
         lines.append(f" Prob Corr (TCN vs LR): {logistic_metrics['corr_with_tcn']:.3f}")
 
-    threshold = config['trade_simulation']['threshold']
-    target_ticks = config['trade_simulation']['target_ticks']
-    stop_ticks = config['trade_simulation']['stop_ticks']
+    threshold = config["trade_simulation"]["threshold"]
+    target_ticks = config["trade_simulation"]["target_ticks"]
+    stop_ticks = config["trade_simulation"]["stop_ticks"]
 
-    lines.append(f"\n [TRADE SIMULATION] (Threshold > {threshold:.2f} | Target {target_ticks}t / Stop {stop_ticks}t)")
+    lines.append(
+        f"\n [TRADE SIMULATION] (Move prob > {threshold:.2f} | Target {target_ticks}t / Stop {stop_ticks}t)"
+    )
     lines.append(
         " Entries:    {entries:.0f} ({entry_rate:.2f}% of {population:.0f} eligible)".format(**trade_summary)
     )
@@ -119,10 +122,12 @@ def generate_epoch_report(
                 f" Best Thr {best['threshold']:.2f}: Entries {best['entries']:.0f} | Exp {best['expectancy']:+.2f} | Entry Rate {best['entry_rate']:.2f}%"
             )
             if min_trades and best["entries"] < min_trades:
-                lines.append(f" NOTE: Best threshold below min trade target ({int(min_trades)}), results likely noisy.")
+                lines.append(
+                    f" NOTE: Best threshold below min trade target ({int(min_trades)}), results likely noisy."
+                )
         else:
             lines.append(" No threshold met the minimum trade target; skip PnL interpretation.")
 
-    lines.append(f"{'='*80}\n")
-    
+    lines.append(f"{'=' * 80}\n")
+
     return "\n".join(lines), auc

@@ -32,6 +32,8 @@ def _collect_logistic_samples(loader, max_samples: int) -> Optional[tuple[np.nda
 
     X = np.concatenate(features, axis=0)[:max_samples]
     y = np.concatenate(labels, axis=0)[:max_samples]
+    # Convert tri-class into move vs flat (1 = move up/down, 0 = flat).
+    y = (y != 1).astype(np.int64)
     return X, y
 
 
@@ -64,7 +66,7 @@ def train_logistic_baseline(loader, config: dict) -> Optional[LogisticRegression
 
     up_rate = float(np.mean(y)) * 100.0
     logging.info(
-        "Logistic baseline trained on %d samples | Positive rate: %.2f%% | Solver=%s",
+        "Logistic baseline trained on %d samples | Move rate: %.2f%% | Solver=%s",
         len(y),
         up_rate,
         solver,

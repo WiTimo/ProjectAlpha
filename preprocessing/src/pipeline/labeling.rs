@@ -83,17 +83,37 @@ fn compute_target_outcomes(
 ) -> Vec<LabelOutcome> {
     let up_delta = target.up_ticks * tick_size;
     let down_delta = target.down_ticks * tick_size;
-    let lookahead = target.lookahead_events.max(1);
+    let lookahead_events = target.lookahead_events.max(1);
+    let horizon_ns = target.horizon_seconds.map(|s| s as i128 * 1_000_000_000);
 
     let len = mid_series.len();
     let mut next_up_hit: Vec<Option<usize>> = vec![None; len];
     let mut next_down_hit: Vec<Option<usize>> = vec![None; len];
     let mut expired: Vec<bool> = vec![false; len];
     let mut expirations: Vec<Vec<usize>> = vec![Vec::new(); len];
-    for anchor_idx in 0..len {
-        let expiry_idx = (anchor_idx + lookahead).min(len - 1);
-        expirations[expiry_idx].push(anchor_idx);
+    let timestamps: Vec<i128> = mid_series
+        .iter()
+        .map(|(_, anchor)| anchor.timestamp.unix_timestamp_nanos())
+        .collect();
+
+    // Pre-compute expiry indices using either time horizon or event count fallback.
+    if let Some(h_ns) = horizon_ns {
+        let mut end = 0;
+        for start in 0..len {
+            while end + 1 < len
+                && timestamps[end + 1] - timestamps[start] <= h_ns
+            {
+                end += 1;
+            }
+            expirations[end].push(start);
+        }
+    } else {
+        for anchor_idx in 0..len {
+            let expiry_idx = (anchor_idx + lookahead_events).min(len - 1);
+            expirations[expiry_idx].push(anchor_idx);
+        }
     }
+
     let mut up_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
     let mut down_waiters: BTreeMap<OrderedFloat<f64>, Vec<usize>> = BTreeMap::new();
 
@@ -143,7 +163,9 @@ fn compute_target_outcomes(
             let down_hit = next_down_hit[anchor_idx];
             match (up_hit, down_hit) {
                 (Some(up_idx), Some(down_idx)) => {
-                    if up_idx <= down_idx {
+                    if up_idx == down_idx {
+                        LabelOutcome::Flat
+                    } else if up_idx < down_idx {
                         LabelOutcome::HitUp
                     } else {
                         LabelOutcome::HitDown
@@ -151,7 +173,7 @@ fn compute_target_outcomes(
                 }
                 (Some(_), None) => LabelOutcome::HitUp,
                 (None, Some(_)) => LabelOutcome::HitDown,
-                (None, None) => LabelOutcome::NoHit,
+                (None, None) => LabelOutcome::Flat,
             }
         })
         .collect()
@@ -269,6 +291,7 @@ mod tests {
                 up_ticks: up,
                 down_ticks: down,
                 lookahead_events: lookahead,
+                horizon_seconds: None,
             }],
         }
     }
@@ -322,11 +345,9 @@ mod tests {
         ];
 
         let labels = engine.compute_labels(&events);
-        assert!(
-            labels
-                .iter()
-                .all(|label| label.outcomes[0] == LabelOutcome::NoHit)
-        );
+        assert!(labels
+            .iter()
+            .all(|label| label.outcomes[0] == LabelOutcome::Flat));
     }
 
     #[test]
@@ -362,7 +383,7 @@ mod tests {
 
         let labels = engine.compute_labels(&events);
         assert_eq!(labels.len(), events.len());
-        assert!(matches!(labels[0].outcomes[0], LabelOutcome::NoHit));
+        assert!(matches!(labels[0].outcomes[0], LabelOutcome::Flat));
     }
 
     #[test]
@@ -378,7 +399,7 @@ mod tests {
                 0,
                 datetime!(2025-01-01 00:00:00 UTC),
                 0.0,
-                vec![LabelOutcome::NoHit]
+                vec![LabelOutcome::Flat]
             );
             8
         ];

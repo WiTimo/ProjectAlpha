@@ -7,6 +7,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 
 from src.evaluation.metrics import generate_epoch_report
 from src.evaluation.trade_simulator import PredictionRecord, TradeSimulator
+from src.definitions import DOWN_CLASS_INDEX, FLAT_CLASS_INDEX, UP_CLASS_INDEX
 
 def train_epoch(model, loader, optimizer, device, class_weights, config):
     model.train()
@@ -98,12 +99,15 @@ def evaluate_and_log(
             if meta is not None:
                 meta_np = meta.cpu().numpy()
                 for idx in range(meta_np.shape[0]):
+                    move_prob = float(probs_np[idx, DOWN_CLASS_INDEX] + probs_np[idx, UP_CLASS_INDEX])
                     record = PredictionRecord(
                         entry_idx=int(meta_np[idx, 0]),
                         target_idx=int(meta_np[idx, 1]),
                         label=int(targets_np[idx]),
-                        tcn_prob=float(probs_np[idx, 1]),
-                        logistic_prob=float(logistic_batch[idx]) if logistic_batch is not None else None,
+                        move_prob=move_prob,
+                        up_prob=float(probs_np[idx, UP_CLASS_INDEX]),
+                        down_prob=float(probs_np[idx, DOWN_CLASS_INDEX]),
+                        logistic_move_prob=float(logistic_batch[idx]) if logistic_batch is not None else None,
                     )
                     prediction_records.append(record)
             
@@ -118,19 +122,22 @@ def evaluate_and_log(
     logistic_metrics = None
     logistic_trade_summary = None
 
+    move_probs = probs_concat[:, DOWN_CLASS_INDEX] + probs_concat[:, UP_CLASS_INDEX]
+    move_targets = (targets_concat != FLAT_CLASS_INDEX).astype(int)
+
     if logistic_probs:
         logistic_concat = np.concatenate(logistic_probs)
         log_preds = (logistic_concat >= 0.5).astype(int)
-        log_acc = accuracy_score(targets_concat, log_preds)
+        log_acc = accuracy_score(move_targets, log_preds)
         try:
-            log_auc = roc_auc_score(targets_concat, logistic_concat)
+            log_auc = roc_auc_score(move_targets, logistic_concat)
         except ValueError:
             log_auc = 0.5
         logistic_metrics = {"accuracy": log_acc, "auc": log_auc}
         logistic_auc = log_auc
 
         try:
-            corr = float(np.corrcoef(logistic_concat, probs_concat[:, 1])[0, 1])
+            corr = float(np.corrcoef(logistic_concat, move_probs)[0, 1])
             if np.isnan(corr):
                 corr = 0.0
         except Exception:
@@ -160,16 +167,16 @@ def evaluate_and_log(
     }
 
     if trade_simulator and prediction_records:
-        trade_summary = trade_simulator.simulate(prediction_records, prob_field="tcn_prob")
+        trade_summary = trade_simulator.simulate(prediction_records, use_logistic=False)
     if trade_simulator and logistic_metrics and prediction_records:
-        logistic_trade_summary = trade_simulator.simulate(prediction_records, prob_field="logistic_prob")
+        logistic_trade_summary = trade_simulator.simulate(prediction_records, use_logistic=True)
 
     sweep_result = None
     if trade_simulator and prediction_records and sweep_cfg:
         sweep_metrics = []
         for thr in sweep_cfg:
             summary = trade_simulator.simulate(
-                prediction_records, prob_field="tcn_prob", threshold=float(thr)
+                prediction_records, use_logistic=False, threshold=float(thr)
             )
             summary["threshold"] = float(thr)
             sweep_metrics.append(summary)

@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from src.data.loader import StreamingFileEntry
+from src.definitions import DOWN_CLASS_INDEX, FLAT_CLASS_INDEX, UP_CLASS_INDEX
 
 
 @dataclass
@@ -13,8 +14,10 @@ class PredictionRecord:
     entry_idx: int
     target_idx: int
     label: int
-    tcn_prob: float
-    logistic_prob: Optional[float] = None
+    move_prob: float
+    up_prob: float
+    down_prob: float
+    logistic_move_prob: Optional[float] = None
 
 
 class TradeSimulator:
@@ -25,14 +28,18 @@ class TradeSimulator:
         target_ticks: float,
         stop_ticks: float,
         tick_size: float,
+        lookahead_bars: int | None = None,
     ) -> None:
         self.entries = list(entries)
         self.threshold = threshold
         self.target_ticks = target_ticks
         self.stop_ticks = stop_ticks
         self.tick_size = tick_size
+        self.lookahead_bars = lookahead_bars if lookahead_bars and lookahead_bars > 0 else None
         self._timestamp_handles: Dict[int, np.ndarray] = {}
         self._price_handles: Dict[int, np.ndarray] = {}
+        self._exit_idx_handles: Dict[int, np.ndarray] = {}
+        self._target_handles: Dict[int, np.ndarray] = {}
         self.entry_offsets: List[int] = []
 
         cumulative = 0
@@ -43,13 +50,13 @@ class TradeSimulator:
     def simulate(
         self,
         records: Sequence[PredictionRecord],
-        prob_field: str,
+        use_logistic: bool = False,
         threshold: float | None = None,
     ) -> Dict[str, float]:
         cutoff = self.threshold if threshold is None else threshold
         events = []
         for rec in records:
-            prob = getattr(rec, prob_field, None)
+            prob = rec.logistic_move_prob if use_logistic else rec.move_prob
             if prob is None:
                 continue
             timestamps = self._open_timestamps(rec.entry_idx)
@@ -73,21 +80,29 @@ class TradeSimulator:
                 blocked += 1
                 continue
 
-            exit_idx, direction = self._resolve_trade(rec.entry_idx, rec.target_idx)
+            exit_idx, realized_label = self._resolve_trade(rec.entry_idx, rec.target_idx)
             if exit_idx < 0:
                 skipped += 1
                 continue
+
+            predicted_dir = (
+                UP_CLASS_INDEX if rec.up_prob >= rec.down_prob else DOWN_CLASS_INDEX
+            )
+            if realized_label == FLAT_CLASS_INDEX:
+                direction_win = False
+            else:
+                direction_win = realized_label == predicted_dir
 
             exit_abs_idx = self._absolute_index(rec.entry_idx, exit_idx)
             open_until = exit_abs_idx
             trade_durations.append(max(exit_abs_idx - abs_idx, 1))
 
-            if direction == 1:
+            if direction_win:
                 wins += 1
             else:
                 losses += 1
 
-            if direction != rec.label:
+            if realized_label != predicted_dir:
                 mismatches += 1
 
         total_trades = wins + losses
@@ -130,25 +145,58 @@ class TradeSimulator:
             self._price_handles[entry_idx] = np.load(path, mmap_mode="r", allow_pickle=False)
         return self._price_handles[entry_idx]
 
+    def _open_exit_indices(self, entry_idx: int) -> np.ndarray | None:
+        if entry_idx not in self._exit_idx_handles:
+            path = self.entries[entry_idx].exit_index_path
+            try:
+                self._exit_idx_handles[entry_idx] = np.load(path, mmap_mode="r", allow_pickle=False)
+            except OSError:
+                self._exit_idx_handles[entry_idx] = None
+        return self._exit_idx_handles[entry_idx]
+
+    def _open_targets(self, entry_idx: int) -> np.ndarray | None:
+        if entry_idx not in self._target_handles:
+            path = self.entries[entry_idx].targets_path
+            try:
+                self._target_handles[entry_idx] = np.load(path, mmap_mode="r", allow_pickle=False)
+            except OSError:
+                self._target_handles[entry_idx] = None
+        return self._target_handles[entry_idx]
+
     def _resolve_trade(self, entry_idx: int, start_idx: int) -> tuple[int, int]:
+        # Prefer cached exit indices to keep exit logic aligned with label generation.
+        exit_idx_arr = self._open_exit_indices(entry_idx)
+        targets_arr = self._open_targets(entry_idx)
+        if exit_idx_arr is not None and start_idx < len(exit_idx_arr):
+            exit_idx = int(exit_idx_arr[start_idx])
+            if exit_idx < 0:
+                return -1, 0
+            direction = (
+                int(targets_arr[start_idx, 0])
+                if targets_arr is not None and start_idx < len(targets_arr)
+                else FLAT_CLASS_INDEX
+            )
+            return exit_idx, direction
+
         prices = self._open_prices(entry_idx)
         if start_idx >= len(prices) - 1:
-            return -1, 0
+            return -1, FLAT_CLASS_INDEX
 
         anchor = prices[start_idx, 0]
         up_level = anchor + self.tick_size * self.target_ticks
         down_level = anchor - self.tick_size * self.stop_ticks
+        end_idx = len(prices) if self.lookahead_bars is None else min(len(prices), start_idx + self.lookahead_bars + 1)
 
-        for idx in range(start_idx + 1, len(prices)):
+        for idx in range(start_idx + 1, end_idx):
             high = prices[idx, 1]
             low = prices[idx, 2]
             hit_up = high >= up_level
             hit_down = low <= down_level
             if hit_up and hit_down:
-                return -1, 0
+                return idx, FLAT_CLASS_INDEX
             if hit_up:
-                return idx, 1
+                return idx, UP_CLASS_INDEX
             if hit_down:
-                return idx, 0
+                return idx, DOWN_CLASS_INDEX
 
-        return -1, 0
+        return end_idx - 1, FLAT_CLASS_INDEX

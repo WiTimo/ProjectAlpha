@@ -1,0 +1,3 @@
+You need to switch your label generation from event-based horizons to fixed time-based horizons (e.g., “±40 ticks within 10 minutes, otherwise FLAT”), because this directly matches how your strategy holds trades and gives the model a stable prediction target across all liquidity regimes.
+
+Then you re-run preprocessing with these new time-based labels and retrain — this will finally produce meaningful class balance, realistic FLAT behavior, and a model whose AUC and PnL match real-world trading conditions.

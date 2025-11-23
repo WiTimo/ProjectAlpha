@@ -5,9 +5,9 @@ instrument:
   levels: 5
 
 io:
-  input_path: "D:/Ninjatrader_Market_Data/csv"
+  input_path: "../data/raw"
   feature_output_path: "../data/preprocessed"
-  checkpoint_path: "..data/preprocessed/.checkpoints"
+  checkpoint_path: "../data/preprocessed/.checkpoints"
 
 resolutions:
   - resolution: "fast"
@@ -81,6 +81,7 @@ labeling:
       up_ticks: 40.0
       down_ticks: 40.0
       lookahead_events: 2400
+      horizon_seconds: 600
     - name: "t60"
       up_ticks: 60.0
       down_ticks: 60.0
