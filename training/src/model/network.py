@@ -61,7 +61,6 @@ class DilatedTCN(nn.Module):
         self.tcn = nn.Sequential(*layers)
         self.dropout = nn.Dropout(dropout)
         
-        # Adaptive pool to handle variable lengths if needed, but here we just take the last
         self.pool = nn.AdaptiveAvgPool1d(1) 
         self.linear = nn.Linear(num_channels[-1], num_classes)
 
@@ -77,5 +76,8 @@ class DilatedTCN(nn.Module):
         
         # Previous code: Project -> Head(AvgPool -> Flatten -> Linear)
         y2 = self.dropout(y1)
-        y3 = self.pool(y2).squeeze(-1) # (N, C_out)
-        return self.linear(y3)
+        # Use last timestep to stay aligned with anchor bar; average for stability if length < kernel receptive field.
+        last_step = y2[:, :, -1]
+        pooled = self.pool(y2).squeeze(-1)
+        head_input = 0.7 * last_step + 0.3 * pooled
+        return self.linear(head_input)

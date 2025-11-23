@@ -11,20 +11,20 @@ data:
   resolutions: ["fast", "mid", "slow"]
   feature_set: "phase5"
   # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
-  limit_files: 25
+  limit_files: 35
   # Splits
-  val_days: 2
-  test_days: 4
+  val_days: 4
+  test_days: 3
   
 training:
   target: "t40" # Primary target horizon
   primary_only: true # Ignore other targets if true
-  sequence_len: 64
+  sequence_len: 48
   batch_size: 96
   epochs: 20
-  learning_rate: 1.0e-4
+  learning_rate: 8.0e-5
   min_learning_rate: 5.0e-6
-  weight_decay: 5.0e-3
+  weight_decay: 1.0e-2
   max_gradient_norm: 1.0
   patience: 4
   min_delta: 1.0e-3
@@ -45,12 +45,12 @@ chunking:
   seed: 1337
 
 model:
-  hidden_dim: 48
+  hidden_dim: 32
   layers: 2
   stacks: 1
   kernel_size: 5
   dilation_base: 2
-  dropout: 0.5
+  dropout: 0.4
 
 trade_simulation:
   threshold: 0.50

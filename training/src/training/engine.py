@@ -176,11 +176,10 @@ def evaluate_and_log(
 
         if sweep_metrics:
             sweep_metrics.sort(key=lambda item: item["expectancy"], reverse=True)
+            above_min = [m for m in sweep_metrics if m["entries"] >= min_trades]
             sweep_result = {
                 "min_trades": float(min_trades),
-                "best": next(
-                    (m for m in sweep_metrics if m["entries"] >= min_trades), sweep_metrics[0]
-                ),
+                "best": above_min[0] if above_min else None,
             }
     
     # Generate the rich report

@@ -110,15 +110,18 @@ def generate_epoch_report(
             )
         )
 
-    if trade_sweep and trade_sweep.get("best"):
-        best = trade_sweep["best"]
+    if trade_sweep:
         min_trades = trade_sweep.get("min_trades", 0)
         lines.append("\n [THRESHOLD SWEEP] (diagnostic)")
-        lines.append(
-            f" Best Thr {best['threshold']:.2f}: Entries {best['entries']:.0f} | Exp {best['expectancy']:+.2f} | Entry Rate {best['entry_rate']:.2f}%"
-        )
-        if min_trades and best["entries"] < min_trades:
-            lines.append(f" NOTE: Best threshold below min trade target ({int(min_trades)}), results likely noisy.")
+        best = trade_sweep.get("best")
+        if best:
+            lines.append(
+                f" Best Thr {best['threshold']:.2f}: Entries {best['entries']:.0f} | Exp {best['expectancy']:+.2f} | Entry Rate {best['entry_rate']:.2f}%"
+            )
+            if min_trades and best["entries"] < min_trades:
+                lines.append(f" NOTE: Best threshold below min trade target ({int(min_trades)}), results likely noisy.")
+        else:
+            lines.append(" No threshold met the minimum trade target; skip PnL interpretation.")
 
     lines.append(f"{'='*80}\n")
     

@@ -15,6 +15,75 @@ from src.training.engine import train_epoch, evaluate_and_log
 from src.evaluation.metrics import get_class_weights
 from src.evaluation.baselines import train_logistic_baseline
 from src.evaluation.trade_simulator import TradeSimulator
+from src.data.loader import StreamingFileEntry
+
+
+def _run_alignment_diagnostics(
+    loader: DataLoader,
+    entries: list[StreamingFileEntry],
+    resolutions: list[str],
+    col_map: dict[str, list[str]],
+    max_checks: int = 16,
+) -> None:
+    """
+    Quick integrity check: ensure dataset labels match cached targets and that
+    the last timestep features align with the cached feature row for the anchor.
+    """
+    import numpy as np
+
+    if not entries or len(loader.dataset) == 0:
+        logging.info("Alignment diagnostics skipped: empty validation set.")
+        return
+
+    mismatches = 0
+    feature_mismatch = 0
+    checked = 0
+    for batch in loader:
+        x, y, meta = batch
+        x_np = x.numpy()
+        y_np = y.numpy()
+        meta_np = meta.numpy()
+
+        for i in range(x_np.shape[0]):
+            if checked >= max_checks:
+                break
+            f_idx, t_idx = int(meta_np[i, 0]), int(meta_np[i, 1])
+            entry = entries[f_idx]
+            cached_targets = np.load(entry.targets_path, mmap_mode="r")
+            cached_label = int(cached_targets[t_idx, 0])
+            if cached_label != int(y_np[i, 0]):
+                mismatches += 1
+
+            # Compare last step features against cached feature row
+            start = 0
+            last_step = x_np[i, :, -1]
+            for res in resolutions:
+                cols = col_map[res]
+                end = start + len(cols)
+                cached_feat = np.load(entry.feature_paths[res], mmap_mode="r")
+                raw_row = cached_feat[t_idx]
+                if raw_row.shape[0] == end - start:
+                    diff = np.mean(np.abs(last_step[start:end] - raw_row))
+                    if diff > 1e-3:
+                        feature_mismatch += 1
+                start = end
+            checked += 1
+        if checked >= max_checks:
+            break
+
+    if mismatches > 0:
+        logging.warning("Alignment check: %d/%d label mismatches detected.", mismatches, checked)
+    else:
+        logging.info("Alignment check: labels match cached targets on %d samples.", checked)
+
+    if feature_mismatch > 0:
+        logging.warning(
+            "Alignment check: %d/%d feature rows differ (post-standardization). Inspect caching/standardization.",
+            feature_mismatch,
+            checked,
+        )
+    else:
+        logging.info("Alignment check: last-step features agree with cache on %d samples.", checked)
 
 def main():
     setup_logging()
@@ -132,6 +201,7 @@ def main():
         patience=1,
         min_lr=float(config['training'].get('min_learning_rate', 1e-5)),
     )
+    _run_alignment_diagnostics(val_loader, val_entries, resolutions, col_map)
 
     total_counts = np.zeros(NUM_TARGET_CLASSES)
     for e in train_entries:
