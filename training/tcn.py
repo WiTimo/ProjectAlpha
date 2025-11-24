@@ -161,7 +161,8 @@ def main():
 
     # 5. Standardize
     stats = compute_stats(train_entries, resolutions, col_map)
-    standardize_entries(entries, stats)
+    clip_value = float(config["data"].get("standardize_clip", 0.0))
+    standardize_entries(entries, stats, clip_value=clip_value if clip_value > 0 else None)
 
     # 6. Dataloaders
     seq_len = config['training']['sequence_len']

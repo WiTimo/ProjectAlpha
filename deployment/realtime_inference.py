@@ -86,8 +86,25 @@ def load_model(bundle_path: Path) -> Dict[str, Any]:
 
 
 def standardize(features: Dict[str, float], feature_columns: Iterable[str], means, stds) -> np.ndarray:
+    """Standardize a single feature row using training-style z-score + clipping.
+
+    Mirrors the training pipeline:
+      - (x - mean) / std
+      - replace NaN/Inf with finite values
+      - clamp extreme z-scores to a fixed range for numerical stability
+    """
     vector = np.array([features.get(col, 0.0) for col in feature_columns], dtype=np.float32)
     vector = (vector - means) / stds
+    # Guard against NaN/Inf originating from bad inputs or zero std
+    vector = np.nan_to_num(vector, copy=False)
+    # Clip using the same default as training (`standardize_clip`); override via env if needed
+    clip_raw = os.getenv("ALPHA_STANDARDIZE_CLIP", "10.0")
+    try:
+        clip_value = float(clip_raw)
+    except ValueError:
+        clip_value = 10.0
+    if clip_value > 0:
+        np.clip(vector, -clip_value, clip_value, out=vector)
     return vector
 
 
@@ -467,10 +484,9 @@ def main() -> None:
     if args.trigger_hotkey:
         args.up_hotkey = args.trigger_hotkey
         args.down_hotkey = args.trigger_hotkey
-    resolution_filter = args.resolution.lower().strip() if args.resolution else None
-    if resolution_filter == "all":
-        resolution_filter = None
-    args.resolution = resolution_filter
+    # Resolution filtering is currently unused by the feature parser; keep
+    # attribute for backward compatibility but default to no filtering.
+    args.resolution = None
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(message)s",

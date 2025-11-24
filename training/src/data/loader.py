@@ -332,13 +332,28 @@ def compute_stats(entries: List[StreamingFileEntry], resolution_plan: List[str],
             stats[res] = (means.astype(np.float32), np.sqrt(var).astype(np.float32))
     return stats
 
-def standardize_entries(entries: List[StreamingFileEntry], stats: Dict):
+def standardize_entries(
+    entries: List[StreamingFileEntry],
+    stats: Dict,
+    clip_value: float | None = None,
+) -> None:
+    """Standardize cached features in-place, with optional clipping for robustness.
+
+    Clipping limits extreme z-scores that can otherwise propagate through the
+    TCN and produce numerically unstable logits on a small subset of samples.
+    """
     logging.info("Standardizing cache files in-place...")
     for entry in tqdm(entries, desc="Standardizing"):
         for res, (mean, std) in stats.items():
             if res in entry.feature_paths:
                 path = entry.feature_paths[res]
                 data = np.load(path, mmap_mode="r+")
+                # z-score in-place
                 data[:] = (data - mean) / std
+                # Replace NaN/Inf that might originate from bad inputs/std
+                np.nan_to_num(data, copy=False)
+                # Optionally clamp extreme values to keep the model numerically stable
+                if clip_value is not None and clip_value > 0:
+                    np.clip(data, -clip_value, clip_value, out=data)
                 data.flush()
                 del data

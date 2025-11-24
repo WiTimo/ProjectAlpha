@@ -68,9 +68,15 @@ def evaluate_and_log(
     
     sweep_cfg = config.get("trade_simulation", {}).get("threshold_sweep", [])
     min_trades = int(config.get("trade_simulation", {}).get("min_trades", 0))
+    max_log_batches = int(config.get("training", {}).get("log_val_batches", 0))
+    outlier_threshold = float(config.get("training", {}).get("val_loss_alert_threshold", 10.0))
+    max_outlier_batches = int(config.get("training", {}).get("log_val_outlier_batches", 5))
+    outlier_batches_logged = 0
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Validating", leave=False, ncols=100):
+        for batch_idx, batch in enumerate(
+            tqdm(loader, desc="Validating", leave=False, ncols=100), start=1
+        ):
             if len(batch) == 3:
                 x, y, meta = batch
             else:
@@ -80,11 +86,63 @@ def evaluate_and_log(
             logits = model(x)
             target = y[:, 0]
             
-            # Compute validation loss
-            loss = F.cross_entropy(logits, target, weight=class_weights, reduction="none")
-            total_loss += loss.sum().item()
-            val_count += loss.numel()
+            # Compute validation loss (both weighted and unweighted for diagnostics)
+            weighted_loss = F.cross_entropy(
+                logits, target, weight=class_weights, reduction="mean"
+            )
+            unweighted_loss = F.cross_entropy(logits, target, reduction="mean")
+
+            total_loss += weighted_loss.item() * y.size(0)
+            val_count += y.size(0)
             steps += 1
+
+            if max_log_batches > 0 and batch_idx <= max_log_batches:
+                logging.info(
+                    "Val batch %d | weighted_loss=%.6f | unweighted_loss=%.6f | batch_size=%d",
+                    batch_idx,
+                    weighted_loss.item(),
+                    unweighted_loss.item(),
+                    y.size(0),
+                )
+
+            # Log outlier batches with abnormally large or non-finite loss
+            if outlier_batches_logged < max_outlier_batches:
+                w = float(weighted_loss.item())
+                u = float(unweighted_loss.item())
+                if not np.isfinite(w) or not np.isfinite(u) or w > outlier_threshold or u > outlier_threshold:
+                    batch_targets = target.detach().cpu().numpy()
+                    unique_labels, label_counts = np.unique(batch_targets, return_counts=True)
+                    label_stats = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, label_counts)}
+
+                    if meta is not None:
+                        meta_np = meta.detach().cpu().numpy()
+                        file_ids = np.unique(meta_np[:, 0].astype(int))
+                        tgt_min = int(meta_np[:, 1].min())
+                        tgt_max = int(meta_np[:, 1].max())
+                    else:
+                        file_ids = np.array([], dtype=int)
+                        tgt_min = -1
+                        tgt_max = -1
+
+                    logits_max = float(logits.max().item())
+                    logits_min = float(logits.min().item())
+
+                    logging.warning(
+                        "Val outlier batch %d | weighted_loss=%.6f | unweighted_loss=%.6f | "
+                        "batch_size=%d | labels=%s | file_ids=%s | target_idx_range=[%d, %d] | "
+                        "logits_range=[%.3f, %.3f]",
+                        batch_idx,
+                        w,
+                        u,
+                        y.size(0),
+                        label_stats,
+                        file_ids.tolist(),
+                        tgt_min,
+                        tgt_max,
+                        logits_min,
+                        logits_max,
+                    )
+                    outlier_batches_logged += 1
             
             probs = F.softmax(logits, dim=1)
             probs_np = probs.cpu().numpy()

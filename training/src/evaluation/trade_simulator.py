@@ -172,39 +172,22 @@ class TradeSimulator:
         return self._target_handles[entry_idx]
 
     def _resolve_trade(self, entry_idx: int, start_idx: int) -> tuple[int, int]:
-        # Prefer cached exit indices to keep exit logic aligned with label generation.
+        # Logic MUST be identical to label generation. We now exclusively use cached data.
         exit_idx_arr = self._open_exit_indices(entry_idx)
         targets_arr = self._open_targets(entry_idx)
-        if exit_idx_arr is not None and start_idx < len(exit_idx_arr):
-            exit_idx = int(exit_idx_arr[start_idx])
-            if exit_idx < 0:
-                return -1, 0
-            direction = (
-                int(targets_arr[start_idx, 0])
-                if targets_arr is not None and start_idx < len(targets_arr)
-                else FLAT_CLASS_INDEX
-            )
-            return exit_idx, direction
 
-        prices = self._open_prices(entry_idx)
-        if start_idx >= len(prices) - 1:
+        # If cached data is missing or index is invalid, we cannot resolve the trade.
+        # Fallback to re-derivation is risky and has been proven to be inconsistent.
+        if (exit_idx_arr is None 
+            or targets_arr is None
+            or start_idx >= len(exit_idx_arr) 
+            or start_idx >= len(targets_arr)):
             return -1, FLAT_CLASS_INDEX
 
-        anchor = prices[start_idx, 0]
-        up_level = anchor + self.tick_size * self.target_ticks
-        down_level = anchor - self.tick_size * self.stop_ticks
-        end_idx = len(prices) if self.lookahead_bars is None else min(len(prices), start_idx + self.lookahead_bars + 1)
+        exit_idx = int(exit_idx_arr[start_idx])
+        # A negative exit_idx means no valid exit was found during labeling.
+        if exit_idx < 0:
+            return -1, FLAT_CLASS_INDEX
 
-        for idx in range(start_idx + 1, end_idx):
-            high = prices[idx, 1]
-            low = prices[idx, 2]
-            hit_up = high >= up_level
-            hit_down = low <= down_level
-            if hit_up and hit_down:
-                return idx, FLAT_CLASS_INDEX
-            if hit_up:
-                return idx, UP_CLASS_INDEX
-            if hit_down:
-                return idx, DOWN_CLASS_INDEX
-
-        return end_idx - 1, FLAT_CLASS_INDEX
+        direction = int(targets_arr[start_idx, 0])
+        return exit_idx, direction

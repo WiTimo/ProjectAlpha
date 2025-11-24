@@ -12,6 +12,8 @@ data:
   feature_set: "phase5"
   # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
   limit_files: 35
+  # Clip standardized features to avoid extreme z-scores that can destabilize training.
+  standardize_clip: 10.0
   # Splits
   val_days: 4
   test_days: 3
@@ -34,6 +36,11 @@ training:
   baseline_margin: 0.01
   baseline_patience: 3
   min_epochs: 3
+  # Debugging: how many validation batches to log per-epoch (0 = disabled)
+  log_val_batches: 10
+  # Debugging: flag unusually large validation batches
+  val_loss_alert_threshold: 10.0
+  log_val_outlier_batches: 5
   
   # Loss configuration
   class_weight_power: 0.4

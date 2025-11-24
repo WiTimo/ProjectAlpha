@@ -33,8 +33,7 @@ def _collect_logistic_samples(loader, max_samples: int) -> Optional[tuple[np.nda
 
     X = np.concatenate(features, axis=0)[:max_samples]
     y = np.concatenate(labels, axis=0)[:max_samples]
-    # Convert tri-class into move vs flat (1 = move up/down, 0 = flat).
-    y = (y != 1).astype(np.int64)
+    # y is already correctly converted to move vs flat (1=move, 0=flat).
     return X, y
 
 
