@@ -18,7 +18,8 @@ def _collect_logistic_samples(loader, max_samples: int) -> Optional[tuple[np.nda
             x, y = batch
         last_step = x[:, :, -1].detach().cpu().numpy()
         batch_features = last_step.reshape(last_step.shape[0], -1)
-        batch_labels = y[:, 0].detach().cpu().numpy().astype(np.int64)
+        raw_labels = y[:, 0].detach().cpu().numpy().astype(np.int64)
+        batch_labels = (raw_labels != 1).astype(np.int64)  # move vs flat
 
         features.append(batch_features)
         labels.append(batch_labels)
@@ -63,6 +64,12 @@ def train_logistic_baseline(loader, config: dict) -> Optional[LogisticRegression
         class_weight="balanced",
     )
     model.fit(X, y)
+    # Remember which column represents the positive (move) class in predict_proba
+    try:
+        pos_idx = int(np.where(model.classes_ == 1)[0][0])
+    except Exception:
+        pos_idx = 1 if len(model.classes_) > 1 else 0
+    model.positive_index = pos_idx
 
     up_rate = float(np.mean(y)) * 100.0
     logging.info(

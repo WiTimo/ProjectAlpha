@@ -110,6 +110,7 @@ def derive_triclass_targets(
     lookahead = n if not lookahead_bars or lookahead_bars <= 0 else lookahead_bars
     expirations: list[list[int]] = [[] for _ in range(n)]
     expired = np.zeros(n, dtype=bool)
+    expiry_for_anchor = np.full(n, n - 1, dtype=np.int32)
 
     for idx in range(n):
         high = highs[idx]
@@ -133,6 +134,7 @@ def derive_triclass_targets(
         heapq.heappush(pending_down, (-(anchor_price - down_delta), idx))
 
         expiry_idx = min(n - 1, idx + lookahead)
+        expiry_for_anchor[idx] = expiry_idx
         expirations[expiry_idx].append(idx)
         for anchor in expirations[idx]:
             expired[anchor] = True
@@ -142,7 +144,7 @@ def derive_triclass_targets(
         down_hit = next_down[idx]
 
         if up_hit == -1 and down_hit == -1:
-            exit_indices[idx] = expiry_idx
+            exit_indices[idx] = int(expiry_for_anchor[idx])
             valid_mask[idx] = True
             continue
 

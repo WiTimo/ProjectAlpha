@@ -72,6 +72,7 @@ class TradeSimulator:
         wins = losses = 0
         blocked = skipped = 0
         mismatches = 0
+        mismatch_examples = 0
         trade_durations: List[int] = []
         for _, abs_idx, rec, prob in events:
             if prob <= cutoff:
@@ -102,8 +103,14 @@ class TradeSimulator:
             else:
                 losses += 1
 
-            if realized_label != predicted_dir:
+            if realized_label != FLAT_CLASS_INDEX and realized_label != predicted_dir:
                 mismatches += 1
+                if mismatch_examples < 5:
+                    mismatch_examples += 1
+                    # Minimal inline debug; caller can correlate entry_idx/target_idx in cache if needed.
+                    print(
+                        f"[TradeSim] mismatch entry={rec.entry_idx} target={rec.target_idx} realized={realized_label} predicted={predicted_dir}"
+                    )
 
         total_trades = wins + losses
         if total_trades:
@@ -128,6 +135,7 @@ class TradeSimulator:
             "expectancy": expectancy,
             "avg_duration_bars": avg_duration,
             "population": float(len(events)),
+            "mismatch_rate": (mismatches / max(total_trades, 1)) * 100.0 if total_trades else 0.0,
         }
 
     def _open_timestamps(self, entry_idx: int) -> np.ndarray:

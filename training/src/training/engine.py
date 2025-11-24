@@ -29,7 +29,7 @@ def train_epoch(model, loader, optimizer, device, class_weights, config):
         logits = model(x) 
         target = y[:, 0] # Primary target
         
-        loss = F.cross_entropy(logits, target, weight=class_weights)
+        loss = F.cross_entropy(logits, target, weight=class_weights, reduction="none").mean()
         loss.backward()
         
         if max_grad > 0:
@@ -57,6 +57,7 @@ def evaluate_and_log(
 ):
     model.eval()
     total_loss = 0
+    val_count = 0
     steps = 0
     
     all_probs = []
@@ -80,8 +81,9 @@ def evaluate_and_log(
             target = y[:, 0]
             
             # Compute validation loss
-            loss = F.cross_entropy(logits, target, weight=class_weights)
-            total_loss += loss.item()
+            loss = F.cross_entropy(logits, target, weight=class_weights, reduction="none")
+            total_loss += loss.sum().item()
+            val_count += loss.numel()
             steps += 1
             
             probs = F.softmax(logits, dim=1)
@@ -93,7 +95,16 @@ def evaluate_and_log(
             logistic_batch = None
             if logistic_model is not None:
                 last_step = x[:, :, -1].detach().cpu().numpy().reshape(probs_np.shape[0], -1)
-                logistic_batch = logistic_model.predict_proba(last_step)[:, 1]
+                pos_idx = getattr(logistic_model, "positive_index", None)
+                if pos_idx is None and hasattr(logistic_model, "classes_"):
+                    try:
+                        pos_idx = int(np.where(logistic_model.classes_ == 1)[0][0])
+                    except Exception:
+                        pos_idx = -1
+                if pos_idx is None or pos_idx < 0 or pos_idx >= logistic_model.classes_.shape[0]:
+                    pos_idx = 1 if logistic_model.classes_.shape[0] > 1 else 0
+                logits_lr = logistic_model.predict_proba(last_step)
+                logistic_batch = logits_lr[:, pos_idx]
                 logistic_probs.append(logistic_batch)
             
             if meta is not None:
@@ -111,7 +122,13 @@ def evaluate_and_log(
                     )
                     prediction_records.append(record)
             
-    val_loss = total_loss / max(steps, 1)
+    val_loss = total_loss / max(val_count, 1)
+    logging.info(
+        "Validation loss components | total_loss_sum=%.4f, sample_count=%d, mean=%.6f",
+        total_loss,
+        val_count,
+        val_loss,
+    )
     
     if not all_targets:
         logging.warning("Validation set empty!")
