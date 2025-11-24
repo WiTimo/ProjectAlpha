@@ -100,9 +100,7 @@ fn compute_target_outcomes(
     if let Some(h_ns) = horizon_ns {
         let mut end = 0;
         for start in 0..len {
-            while end + 1 < len
-                && timestamps[end + 1] - timestamps[start] <= h_ns
-            {
+            while end + 1 < len && timestamps[end + 1] - timestamps[start] <= h_ns {
                 end += 1;
             }
             expirations[end].push(start);
@@ -284,14 +282,14 @@ mod tests {
     use crate::domain::order_book::BookLevel;
     use time::macros::datetime;
 
-    fn single_target_config(up: f64, down: f64, lookahead: usize) -> LabelConfig {
+    fn single_target_config(up: f64, down: f64, horizon_seconds: u64) -> LabelConfig {
         LabelConfig {
             targets: vec![TargetSpec {
                 name: "t20".into(),
                 up_ticks: up,
                 down_ticks: down,
-                lookahead_events: lookahead,
-                horizon_seconds: None,
+                lookahead_events: 1,
+                horizon_seconds: Some(horizon_seconds),
             }],
         }
     }
@@ -319,7 +317,7 @@ mod tests {
 
     #[test]
     fn labeler_detects_up_and_down_hits() {
-        let params = single_target_config(2.0, 2.0, 10);
+        let params = single_target_config(2.0, 2.0, 60);
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
             quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
@@ -372,13 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn labeler_enforces_lookahead_window() {
+    fn labeler_enforces_time_window() {
         let params = single_target_config(1.0, 1.0, 1);
         let engine = LabelingEngine::new(params, 0.25);
         let events = vec![
             quote_event(datetime!(2025-01-01 00:00:00 UTC), 100.0),
             quote_event(datetime!(2025-01-01 00:00:01 UTC), 100.0),
-            quote_event(datetime!(2025-01-01 00:00:02 UTC), 99.0),
+            quote_event(datetime!(2025-01-01 00:00:10 UTC), 99.0),
         ];
 
         let labels = engine.compute_labels(&events);

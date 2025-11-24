@@ -175,6 +175,7 @@ pub struct TargetSpec {
     pub name: String,
     pub up_ticks: f64,
     pub down_ticks: f64,
+    /// Legacy event-count fallback; kept for backward compatibility but ignored when `horizon_seconds` is set.
     #[serde(default = "LabelConfig::default_lookahead_events")]
     pub lookahead_events: usize,
     #[serde(default)]
@@ -207,9 +208,16 @@ impl LabelConfig {
             anyhow::ensure!(target.up_ticks > 0.0, "up_ticks must be > 0");
             anyhow::ensure!(target.down_ticks > 0.0, "down_ticks must be > 0");
             anyhow::ensure!(
-                target.lookahead_events > 0 || target.horizon_seconds.is_some(),
-                "either lookahead_events or horizon_seconds must be set and positive"
+                target.horizon_seconds.map(|v| v > 0).unwrap_or(false)
+                    || target.lookahead_events > 0,
+                "either horizon_seconds (preferred) or lookahead_events must be set and positive"
             );
+            if target.horizon_seconds.is_none() {
+                eprintln!(
+                    "Target {} is missing horizon_seconds; event-count lookahead will be used. Consider setting a fixed time horizon.",
+                    target.name
+                );
+            }
         }
         Ok(())
     }
@@ -225,7 +233,7 @@ impl LabelConfig {
                 up_ticks: 20.0,
                 down_ticks: 20.0,
                 lookahead_events: 1200,
-                horizon_seconds: None,
+                horizon_seconds: Some(600),
             },
             TargetSpec {
                 name: "t40".into(),
