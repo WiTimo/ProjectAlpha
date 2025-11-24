@@ -63,8 +63,8 @@ model:
   dropout: 0.4
 
 trade_simulation:
-  threshold: 0.50
-  threshold_sweep: [0.40, 0.45, 0.50, 0.55, 0.60]
+  threshold: 0.90
+  threshold_sweep: [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.99]
   min_trades: 50
   target_ticks: 40.0
   stop_ticks: 40.0

@@ -317,6 +317,7 @@ def inference_loop(args: argparse.Namespace) -> None:
         enable_triggers = False
         hotkey_emitter = None
     last_trigger_at = {"up": 0.0, "down": 0.0}
+    last_entry_price: Dict[str, Optional[float]] = {"up": None, "down": None}
 
     logging.info(
         "Model loaded (features=%d, sequence_len=%d, targets=%s)",
@@ -400,25 +401,49 @@ def inference_loop(args: argparse.Namespace) -> None:
 
                     if enable_triggers and hotkey_emitter and idx == trigger_idx:
                         now = time.time()
-                        if up_prob >= args.trade_threshold and now - last_trigger_at["up"] >= args.trigger_cooldown:
+                        price_val = float(payload["features"].get(args.entry_price_feature, float("nan")))
+
+                        def price_ok(direction: str) -> bool:
+                            if not np.isfinite(price_val) or args.entry_min_price_move <= 0.0:
+                                return True
+                            last_price = last_entry_price.get(direction)
+                            if last_price is None:
+                                return True
+                            return abs(price_val - last_price) >= args.entry_min_price_move
+
+                        if (
+                            up_prob >= args.trade_threshold
+                            and now - last_trigger_at["up"] >= args.trigger_cooldown
+                            and price_ok("up")
+                        ):
                             if hotkey_emitter.press(args.up_hotkey):
                                 logging.info(
-                                    "Hotkey %s emitted for %s up=%.3f (>= %.3f)",
+                                    "Hotkey %s emitted for %s up=%.3f (>= %.3f) at price=%.2f",
                                     args.up_hotkey,
                                     name,
                                     up_prob,
                                     args.trade_threshold,
+                                    price_val,
                                 )
+                            if np.isfinite(price_val):
+                                last_entry_price["up"] = price_val
                             last_trigger_at["up"] = now
-                        if down_prob >= args.trade_threshold and now - last_trigger_at["down"] >= args.trigger_cooldown:
+                        if (
+                            down_prob >= args.trade_threshold
+                            and now - last_trigger_at["down"] >= args.trigger_cooldown
+                            and price_ok("down")
+                        ):
                             if hotkey_emitter.press(args.down_hotkey):
                                 logging.info(
-                                    "Hotkey %s emitted for %s down=%.3f (>= %.3f)",
+                                    "Hotkey %s emitted for %s down=%.3f (>= %.3f) at price=%.2f",
                                     args.down_hotkey,
                                     name,
                                     down_prob,
                                     args.trade_threshold,
+                                    price_val,
                                 )
+                            if np.isfinite(price_val):
+                                last_entry_price["down"] = price_val
                             last_trigger_at["down"] = now
 
                 logging.info("%s", ", ".join(summary_parts))
@@ -508,6 +533,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2.0,
         help="Minimum seconds between repeated hotkey emissions per direction",
+    )
+    parser.add_argument(
+        "--entry-min-price-move",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum absolute mid-price move (in price units, e.g. $) since the last entry "
+            "in a given direction before allowing a new hotkey. 0 disables price-based gating."
+        ),
+    )
+    parser.add_argument(
+        "--entry-price-feature",
+        type=str,
+        default="mid_close_price",
+        help=(
+            "Feature name to use as the reference price for entry gating "
+            "(defaults to 'mid_close_price')."
+        ),
     )
     return parser.parse_args()
 

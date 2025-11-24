@@ -7,7 +7,9 @@
     "preprocessing": "cd preprocessing && cargo run --bin preprocessing",
     "parquet": "python preprocessing/test/describe_parquet.py --input data/preprocessed/fast/20240610.parquet --output preprocessing/test/parquet-output.txt && python preprocessing/test/describe_parquet.py --input data/preprocessed/20240610.parquet --output preprocessing/test/parquet-labels-output.txt",
     "packages": "python -m pip install -r training/requirements.txt && python -m pip install -r deployment/requirements.txt",
-    "training": "python training/tcn.py"
+    "training": "python training/tcn.py",
+    "realtime": "cd preprocessing && cargo run --bin realtime -- --resolutions fast,mid,slow --source C:/Ninjatrader/L2Log.txt --emit ../runs/realtime/features.jsonl",
+    "deployment": "cd deployment && python realtime_inference.py --model-bundle ../runs/models/best_model.pt --features ../runs/realtime/features.jsonl --resolutions fast mid slow --trade-threshold 0.55 --entry-min-price-move 10.0 --entry-price-feature mid_close_price"
   },
   "engines": {
     "node": ">=14"

@@ -98,11 +98,20 @@ def main():
     resolutions = config['data']['resolutions']
     lookahead_bars = int(config['training'].get('label_lookahead_bars', 0))
     
-    col_map = {}
+    col_map: dict[str, list[str]] = {}
     total_input_channels = 0
     for i, res in enumerate(resolutions):
-        col_map[res] = base_cols 
+        col_map[res] = base_cols
         total_input_channels += len(base_cols)
+
+    # Flattened feature column order used for both training and realtime inference:
+    # base resolution uses raw names; higher resolutions use "@{res}" suffix.
+    feature_columns: list[str] = []
+    for idx, res in enumerate(resolutions):
+        suffix = "" if idx == 0 else f"@{res}"
+        for col in col_map[res]:
+            name = f"{col}{suffix}"
+            feature_columns.append(name)
 
     logging.info(f"Feature Set: {feature_set} | Resolutions: {resolutions}")
     logging.info(f"Total Input Channels: {total_input_channels}")
@@ -163,6 +172,20 @@ def main():
     stats = compute_stats(train_entries, resolutions, col_map)
     clip_value = float(config["data"].get("standardize_clip", 0.0))
     standardize_entries(entries, stats, clip_value=clip_value if clip_value > 0 else None)
+
+    # Build per-feature means/stds aligned with feature_columns for export.
+    scaler_means: dict[str, float] = {}
+    scaler_stds: dict[str, float] = {}
+    for idx, res in enumerate(resolutions):
+        if res not in stats:
+            continue
+        means_res, stds_res = stats[res]
+        suffix = "" if idx == 0 else f"@{res}"
+        cols = col_map[res]
+        for j, col in enumerate(cols):
+            key = f"{col}{suffix}"
+            scaler_means[key] = float(means_res[j])
+            scaler_stds[key] = float(stds_res[j])
 
     # 6. Dataloaders
     seq_len = config['training']['sequence_len']
@@ -243,6 +266,23 @@ def main():
     baseline_auc = None
     below_baseline_epochs = 0
 
+    # Minimal training metadata stored in the deployment bundle.
+    training_metadata = {
+        "sequence_len": int(seq_len),
+        "model": {
+            "hidden_dim": int(hidden),
+            "layers": int(layers),
+            "kernel_size": int(config['model']['kernel_size']),
+            "dropout": float(config['model']['dropout']),
+            "dilation_base": int(config['model'].get('dilation_base', 2)),
+        },
+        "data": {
+            "feature_set": feature_set,
+            "resolutions": list(resolutions),
+        },
+        "target": config['training']['target'],
+    }
+
     logging.info("Starting training...")
     for epoch in range(1, epochs + 1):
         train_loss = train_epoch(model, train_loader, optimizer, device, class_weights, config)
@@ -272,7 +312,18 @@ def main():
             patience_counter = 0
             path = Path(config['paths']['model_export_dir']) / "best_model.pt"
             path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), path)
+
+            bundle = {
+                "model_state_dict": model.state_dict(),
+                "feature_columns": feature_columns,
+                "target_columns": [config['training']['target']],
+                "training": training_metadata,
+                "scaler": {
+                    "means": scaler_means,
+                    "stds": scaler_stds,
+                },
+            }
+            torch.save(bundle, path)
             logging.info(f"--> New Best Model Saved (AUC: {best_auc:.4f})")
         else:
             patience_counter += 1
