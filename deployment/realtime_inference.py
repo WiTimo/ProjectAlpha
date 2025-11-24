@@ -21,11 +21,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from training.src.model.network import DilatedTCN
+
 NUM_TARGET_CLASSES = 3
 
 
 def load_model(bundle_path: Path) -> Dict[str, Any]:
     import joblib
+
+    # Joblib-based logistic regression bundle (legacy/simple baseline)
     if str(bundle_path).endswith(".pkl"):
         bundle = joblib.load(bundle_path)
         model = bundle["model"]
@@ -37,52 +41,72 @@ def load_model(bundle_path: Path) -> Dict[str, Any]:
             "threshold": threshold,
             "type": "logistic_regression",
         }
-    else:
-        bundle = torch.load(bundle_path, map_location="cpu")
-        model_state = bundle.get("model_state_dict") or bundle.get("state_dict")
-        if model_state is None:
-            raise KeyError(
-                "Model bundle missing 'model_state_dict'/'state_dict'. Re-export training bundle."
-            )
-        scaler = bundle.get("scaler", {})
-        feature_columns = bundle.get("feature_columns", [])
-        if not feature_columns:
-            raise KeyError(
-                "Model bundle missing feature column metadata; re-export the training bundle."
-            )
-        target_columns = bundle.get("target_columns") or (
-            [bundle.get("target_column")] if bundle.get("target_column") else []
+
+    # TCN bundle exported by training/tcn.py
+    bundle = torch.load(bundle_path, map_location="cpu")
+    if not isinstance(bundle, dict):
+        raise KeyError(
+            "Model file does not contain a metadata bundle. "
+            "Please re-run training with the updated exporter."
         )
-        num_targets = max(1, len(target_columns) or 1)
 
-        from training.tcn_deprecated import DilatedTCN
-
-        training_cfg = bundle.get("training", {})
-        model_cfg = dict(training_cfg.get("model", {}))
-        model_cfg.setdefault("output_dim", num_targets * NUM_TARGET_CLASSES)
-        sequence_len = max(1, int(training_cfg.get("sequence_len") or 1))
-        model = DilatedTCN(num_features=len(feature_columns), **model_cfg)
-        model.load_state_dict(model_state)
-        model.eval()
-
-        means = np.array(
-            [scaler.get("means", {}).get(col, 0.0) for col in feature_columns], dtype=np.float32
+    model_state = bundle.get("model_state_dict") or bundle.get("state_dict")
+    if model_state is None:
+        raise KeyError(
+            "Model bundle missing 'model_state_dict'/'state_dict'. Re-export training bundle."
         )
-        stds = np.array(
-            [scaler.get("stds", {}).get(col, 1.0) for col in feature_columns], dtype=np.float32
-        )
-        stds = np.where(stds == 0, 1.0, stds)
 
-        return {
-            "model": model,
-            "feature_columns": feature_columns,
-            "target_columns": target_columns,
-            "means": means,
-            "stds": stds,
-            "sequence_len": sequence_len,
-            "num_targets": num_targets,
-            "type": "tcn",
-        }
+    feature_columns = bundle.get("feature_columns", [])
+    if not feature_columns:
+        raise KeyError(
+            "Model bundle missing feature column metadata; re-export the training bundle."
+        )
+
+    scaler = bundle.get("scaler", {})
+    target_columns = bundle.get("target_columns") or (
+        [bundle.get("target_column")] if bundle.get("target_column") else []
+    )
+    num_targets = max(1, len(target_columns) or 1)
+
+    training_cfg = bundle.get("training", {})
+    model_meta = dict(training_cfg.get("model", {}))
+    hidden_dim = int(model_meta.get("hidden_dim", 32))
+    layers = int(model_meta.get("layers", 2))
+    kernel_size = int(model_meta.get("kernel_size", 5))
+    dropout = float(model_meta.get("dropout", 0.0))
+    dilation_base = int(model_meta.get("dilation_base", 2))
+    num_channels = [hidden_dim] * layers
+    sequence_len = max(1, int(training_cfg.get("sequence_len") or 1))
+
+    model = DilatedTCN(
+        num_inputs=len(feature_columns),
+        num_classes=NUM_TARGET_CLASSES,
+        num_channels=num_channels,
+        kernel_size=kernel_size,
+        dropout=dropout,
+        dilation_base=dilation_base,
+    )
+    model.load_state_dict(model_state)
+    model.eval()
+
+    means = np.array(
+        [scaler.get("means", {}).get(col, 0.0) for col in feature_columns], dtype=np.float32
+    )
+    stds = np.array(
+        [scaler.get("stds", {}).get(col, 1.0) for col in feature_columns], dtype=np.float32
+    )
+    stds = np.where(stds == 0, 1.0, stds)
+
+    return {
+        "model": model,
+        "feature_columns": feature_columns,
+        "target_columns": target_columns or ["t40"],
+        "means": means,
+        "stds": stds,
+        "sequence_len": sequence_len,
+        "num_targets": num_targets,
+        "type": "tcn",
+    }
 
 
 def standardize(features: Dict[str, float], feature_columns: Iterable[str], means, stds) -> np.ndarray:
@@ -353,11 +377,22 @@ def inference_loop(args: argparse.Namespace) -> None:
                 tensor = torch.from_numpy(channels_first).unsqueeze(0)
                 with torch.no_grad():
                     logits = model(tensor)
-                    logits = logits.view(1, num_targets, NUM_TARGET_CLASSES)
+                    # Support both single-target (N, C) and flattened multi-target (N, T*C)
+                    if logits.dim() == 2 and logits.shape[1] == NUM_TARGET_CLASSES:
+                        logits = logits.view(1, 1, NUM_TARGET_CLASSES)
+                        effective_targets = 1
+                    elif logits.dim() == 2 and logits.shape[1] == num_targets * NUM_TARGET_CLASSES:
+                        logits = logits.view(1, num_targets, NUM_TARGET_CLASSES)
+                        effective_targets = num_targets
+                    else:
+                        raise RuntimeError(
+                            f"Unexpected logits shape {tuple(logits.shape)} for "
+                            f"num_targets={num_targets} and NUM_TARGET_CLASSES={NUM_TARGET_CLASSES}"
+                        )
                     probs = torch.softmax(logits, dim=-1)
 
                 summary_parts: List[str] = []
-                for idx, name in enumerate(target_columns):
+                for idx, name in enumerate(target_columns[:effective_targets]):
                     target_prob = probs[0, idx]
                     down_prob = float(target_prob[0].item())
                     up_prob = float(target_prob[2].item())
@@ -484,7 +519,7 @@ def main() -> None:
     if args.trigger_hotkey:
         args.up_hotkey = args.trigger_hotkey
         args.down_hotkey = args.trigger_hotkey
-    # Resolution filtering is currently unused by the feature parser; keep
+    # Resolution filtering is currently unused by the feature parser; keep the
     # attribute for backward compatibility but default to no filtering.
     args.resolution = None
     logging.basicConfig(
