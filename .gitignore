@@ -2,3 +2,4 @@
 /data/**/*.parquet
 /preprocessing/data
 /runs/cache/**/*.npy
+**/features.jsonl

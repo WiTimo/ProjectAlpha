@@ -56,7 +56,13 @@ class TradeSimulator:
         cutoff = self.threshold if threshold is None else threshold
         events = []
         for rec in records:
-            prob = rec.logistic_move_prob if use_logistic else rec.move_prob
+            # For TCN-based simulation, gate on the *directional* probability,
+            # mirroring realtime behaviour (max(up_prob, down_prob)).
+            # For logistic baselines, use the provided move probability.
+            if use_logistic:
+                prob = rec.logistic_move_prob
+            else:
+                prob = max(rec.up_prob, rec.down_prob)
             if prob is None:
                 continue
             timestamps = self._open_timestamps(rec.entry_idx)
