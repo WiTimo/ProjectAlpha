@@ -38,9 +38,13 @@ struct RealtimeArgs {
     )]
     emit: PathBuf,
 
-    /// Start tailing from the end (true) or from the beginning (false).
+    /// Start tailing from the end (true).
     #[arg(long, default_value_t = true)]
     follow: bool,
+
+    /// If set, start reading the source file from the beginning instead of tailing new data.
+    #[arg(long, default_value_t = false)]
+    from_start: bool,
 
     /// Poll interval in milliseconds when no new data arrives.
     #[arg(long, default_value_t = 50)]
@@ -128,10 +132,11 @@ fn build_realtime_config(args: &RealtimeArgs, base: &PipelineConfig) -> Result<R
         HashMap::new()
     };
     let session_reset_gap_ns = (args.session_gap_secs.max(0) as i128) * 1_000_000_000i128;
+    let start_from_end = if args.from_start { false } else { args.follow };
 
     Ok(RealtimeConfig {
         source_path: Some(args.source.clone()),
-        start_from_end: args.follow,
+        start_from_end,
         poll_interval: Duration::from_millis(args.poll_ms),
         emit_path: Some(args.emit.clone()),
         plan,
@@ -140,6 +145,7 @@ fn build_realtime_config(args: &RealtimeArgs, base: &PipelineConfig) -> Result<R
         warmup_bars: args.norm_warmup,
         normalization_state,
         session_reset_gap_ns,
+        exit_on_eof: args.from_start,
     })
 }
 

@@ -11,6 +11,7 @@ import platform
 import sys
 import time
 from collections import Counter, deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -257,6 +258,63 @@ def inference_loop(args: argparse.Namespace) -> None:
     logging.info("Watching %s for feature rows", features_path)
     last_idle_log = time.time()
 
+    total_rows: Optional[int] = None
+    progress_bar = None
+
+    eval_log_file = None
+    eval_summary_path: Optional[Path] = getattr(args, "eval_summary_json", None)
+    threshold_sweep: List[float] = list(getattr(args, "eval_threshold_sweep", []) or [])
+    if args.trade_threshold is not None and args.trade_threshold not in threshold_sweep:
+        threshold_sweep.append(args.trade_threshold)
+
+    eval_stats: Dict[str, Any] = {
+        "rows_total": 0,
+        "rows_parsed": 0,
+        "rows_per_resolution": Counter(),
+        "threshold_sweep": {float(t): {"up_triggers": 0, "down_triggers": 0, "either_triggers": 0} for t in threshold_sweep},
+        "hotkey_trades": {"up": 0, "down": 0},
+        "first_start_timestamp_ns": None,
+        "last_end_timestamp_ns": None,
+        "config": {
+            "trade_threshold": args.trade_threshold,
+            "trigger_target": args.trigger_target,
+            "up_hotkey": args.up_hotkey,
+            "down_hotkey": args.down_hotkey,
+            "entry_min_price_move": args.entry_min_price_move,
+            "entry_price_feature": args.entry_price_feature,
+            "idle_log_seconds": args.idle_log_seconds,
+            "poll_interval": args.poll_interval,
+        },
+    }
+
+    if args.replay_existing:
+        try:
+            with features_path.open("r", encoding="utf-8", errors="ignore") as f:
+                total_rows = sum(1 for _ in f)
+        except FileNotFoundError:
+            total_rows = None
+
+        if total_rows is not None and total_rows > 0:
+            logging.info(
+                "Offline replay mode: %d feature rows found in %s",
+                total_rows,
+                features_path,
+            )
+            if getattr(args, "eval_log_jsonl", None) is not None:
+                try:
+                    eval_log_path = Path(args.eval_log_jsonl)
+                    eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+                    eval_log_file = eval_log_path.open("w", encoding="utf-8")
+                    logging.info("Offline eval log will be written to %s", eval_log_path)
+                except Exception as exc:  # pragma: no cover - log-only
+                    logging.warning("Failed to open eval log file %s: %s", args.eval_log_jsonl, exc)
+                    eval_log_file = None
+        else:
+            logging.info(
+                "Offline replay mode: no feature rows found in %s (nothing to process yet)",
+                features_path,
+            )
+
     if model_type == "logistic_regression":
         model = bundle["model"]
         feature_columns = bundle["feature_columns"]
@@ -297,18 +355,25 @@ def inference_loop(args: argparse.Namespace) -> None:
     window: deque[np.ndarray] = deque(maxlen=sequence_len)
     warmed_up = sequence_len == 1
     rows_seen = 0
+    rows_read = 0
     drop_counts: Counter[str] = Counter()
+
+    # Offline trade simulation state (replay_existing mode)
+    open_trades: List[Dict[str, Any]] = []
+    completed_trades: List[Dict[str, Any]] = []
+    next_trade_id = 1
 
     trigger_idx: Optional[int] = None
     trigger_label: Optional[str] = None
-    enable_triggers = args.trade_threshold is not None and num_targets > 0
-    if enable_triggers:
+    simulate_trades = args.trade_threshold is not None and num_targets > 0
+    enable_triggers = simulate_trades and not args.replay_existing
+    if simulate_trades:
         trigger_label = args.trigger_target or target_columns[0]
         if trigger_label is None:
-            enable_triggers = False
+            simulate_trades = False
         elif trigger_label not in target_columns:
             logging.warning("Trigger target '%s' not found; disabling hotkeys", trigger_label)
-            enable_triggers = False
+            simulate_trades = False
         else:
             trigger_idx = target_columns.index(trigger_label)
     hotkey_emitter = HotkeyEmitter() if enable_triggers else None
@@ -326,10 +391,26 @@ def inference_loop(args: argparse.Namespace) -> None:
         ", ".join(target_columns) or "n/a",
     )
 
+    if args.replay_existing and total_rows and total_rows > 0:
+        try:
+            from tqdm import tqdm  # type: ignore
+
+            progress_bar = tqdm(
+                total=total_rows,
+                desc="Offline eval",
+                unit="row",
+                ncols=100,
+                leave=False,
+            )
+        except Exception:
+            progress_bar = None
+
     try:
         while True:
             lines = tail.read_new_lines()
             if not lines:
+                if args.replay_existing and total_rows and total_rows > 0 and rows_read >= total_rows:
+                    break
                 now = time.time()
                 if now - last_idle_log >= args.idle_log_seconds:
                     drop_summary = ", ".join(
@@ -348,13 +429,30 @@ def inference_loop(args: argparse.Namespace) -> None:
                 continue
 
             for line in lines:
+                rows_read += 1
+                eval_stats["rows_total"] += 1
+
                 parsed, drop_reason = parse_feature_line(line, args.resolution)
                 if drop_reason:
                     drop_counts[drop_reason] += 1
                 if not parsed:
+                    if args.replay_existing and total_rows and total_rows > 0 and progress_bar is not None:
+                        progress_bar.update(1)
                     continue
 
                 payload = parsed
+                eval_stats["rows_parsed"] += 1
+
+                resolution = str(payload.get("resolution", ""))
+                eval_stats["rows_per_resolution"][resolution] += 1
+
+                start_ns = int(payload.get("start_timestamp_ns", 0))
+                end_ns = int(payload.get("end_timestamp_ns", 0))
+                if eval_stats["first_start_timestamp_ns"] is None and start_ns:
+                    eval_stats["first_start_timestamp_ns"] = start_ns
+                if end_ns:
+                    eval_stats["last_end_timestamp_ns"] = end_ns
+
                 rows_seen += 1
                 vector = standardize(payload["features"], feature_columns, means, stds)
                 window.append(vector)
@@ -393,65 +491,305 @@ def inference_loop(args: argparse.Namespace) -> None:
                     probs = torch.softmax(logits, dim=-1)
 
                 summary_parts: List[str] = []
+                per_target: Dict[str, Dict[str, float]] = {}
                 for idx, name in enumerate(target_columns[:effective_targets]):
                     target_prob = probs[0, idx]
                     down_prob = float(target_prob[0].item())
                     up_prob = float(target_prob[2].item())
                     summary_parts.append(f"{name}:down={down_prob:.3f},up={up_prob:.3f}")
+                    per_target[name] = {
+                        "down": down_prob,
+                        "up": up_prob,
+                        "flat": float(target_prob[1].item()),
+                    }
 
-                    if enable_triggers and hotkey_emitter and idx == trigger_idx:
-                        now = time.time()
-                        price_val = float(payload["features"].get(args.entry_price_feature, float("nan")))
+                # Threshold sweep stats (offline eval only; no labels)
+                if threshold_sweep:
+                    max_prob = 0.0
+                    max_dir: Optional[str] = None
+                    for name, probs_dict in per_target.items():
+                        if probs_dict["up"] >= max_prob:
+                            max_prob = probs_dict["up"]
+                            max_dir = "up"
+                        if probs_dict["down"] >= max_prob:
+                            max_prob = probs_dict["down"]
+                            max_dir = "down"
+                    if max_dir is not None:
+                        for thr in threshold_sweep:
+                            if max_prob >= thr:
+                                sweep_entry = eval_stats["threshold_sweep"][float(thr)]
+                                sweep_entry["either_triggers"] += 1
+                                if max_dir == "up":
+                                    sweep_entry["up_triggers"] += 1
+                                else:
+                                    sweep_entry["down_triggers"] += 1
 
-                        def price_ok(direction: str) -> bool:
-                            if not np.isfinite(price_val) or args.entry_min_price_move <= 0.0:
-                                return True
-                            last_price = last_entry_price.get(direction)
-                            if last_price is None:
-                                return True
-                            return abs(price_val - last_price) >= args.entry_min_price_move
+                # Actual trade triggering (threshold-based) and optional hotkey emission
+                price_val = float(payload["features"].get(args.entry_price_feature, float("nan")))
+                if simulate_trades and trigger_idx is not None:
+                    now = time.time()
+                    probs_for_trigger = per_target.get(trigger_label or target_columns[0])
 
+                    def price_ok(direction: str) -> bool:
+                        if not np.isfinite(price_val) or args.entry_min_price_move <= 0.0:
+                            return True
+                        last_price = last_entry_price.get(direction)
+                        if last_price is None:
+                            return True
+                        return abs(price_val - last_price) >= args.entry_min_price_move
+
+                    if probs_for_trigger is not None and np.isfinite(price_val):
+                        up_prob_trigger = probs_for_trigger["up"]
+                        down_prob_trigger = probs_for_trigger["down"]
+
+                        # Up trade trigger
                         if (
-                            up_prob >= args.trade_threshold
+                            up_prob_trigger >= args.trade_threshold
                             and now - last_trigger_at["up"] >= args.trigger_cooldown
                             and price_ok("up")
                         ):
-                            if hotkey_emitter.press(args.up_hotkey):
-                                logging.info(
-                                    "Hotkey %s emitted for %s up=%.3f (>= %.3f) at price=%.2f",
-                                    args.up_hotkey,
-                                    name,
-                                    up_prob,
-                                    args.trade_threshold,
-                                    price_val,
-                                )
+                            if enable_triggers and hotkey_emitter:
+                                if hotkey_emitter.press(args.up_hotkey):
+                                    logging.info(
+                                        "Hotkey %s emitted for %s up=%.3f (>= %.3f) at price=%.2f",
+                                        args.up_hotkey,
+                                        trigger_label or target_columns[0],
+                                        up_prob_trigger,
+                                        args.trade_threshold,
+                                        price_val,
+                                    )
+                            last_trigger_at["up"] = now
                             if np.isfinite(price_val):
                                 last_entry_price["up"] = price_val
-                            last_trigger_at["up"] = now
+                            eval_stats["hotkey_trades"]["up"] += 1
+                            if args.replay_existing and np.isfinite(price_val):
+                                trade = {
+                                    "id": next_trade_id,
+                                    "direction": "up",
+                                    "entry_price": price_val,
+                                    "entry_row_index": rows_seen,
+                                    "entry_timestamp_ns": start_ns or end_ns,
+                                    "threshold": float(args.trade_threshold),
+                                    "resolution": resolution,
+                                    "bar_index": int(payload.get("bar_index", -1)),
+                                }
+                                next_trade_id += 1
+                                open_trades.append(trade)
+                                if eval_log_file is not None:
+                                    trade_evt = {
+                                        "event": "trade_open",
+                                        "trade_id": trade["id"],
+                                        "direction": trade["direction"],
+                                        "entry_price": trade["entry_price"],
+                                        "entry_row_index": trade["entry_row_index"],
+                                        "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                                    }
+                                    try:
+                                        eval_log_file.write(json.dumps(trade_evt) + "\n")
+                                    except Exception as exc:  # pragma: no cover - log-only
+                                        logging.debug("Failed to write trade_open event: %s", exc)
+
+                        # Down trade trigger
                         if (
-                            down_prob >= args.trade_threshold
+                            down_prob_trigger >= args.trade_threshold
                             and now - last_trigger_at["down"] >= args.trigger_cooldown
                             and price_ok("down")
                         ):
-                            if hotkey_emitter.press(args.down_hotkey):
-                                logging.info(
-                                    "Hotkey %s emitted for %s down=%.3f (>= %.3f) at price=%.2f",
-                                    args.down_hotkey,
-                                    name,
-                                    down_prob,
-                                    args.trade_threshold,
-                                    price_val,
-                                )
+                            if enable_triggers and hotkey_emitter:
+                                if hotkey_emitter.press(args.down_hotkey):
+                                    logging.info(
+                                        "Hotkey %s emitted for %s down=%.3f (>= %.3f) at price=%.2f",
+                                        args.down_hotkey,
+                                        trigger_label or target_columns[0],
+                                        down_prob_trigger,
+                                        args.trade_threshold,
+                                        price_val,
+                                    )
+                            last_trigger_at["down"] = now
                             if np.isfinite(price_val):
                                 last_entry_price["down"] = price_val
-                            last_trigger_at["down"] = now
+                            eval_stats["hotkey_trades"]["down"] += 1
+                            if args.replay_existing and np.isfinite(price_val):
+                                trade = {
+                                    "id": next_trade_id,
+                                    "direction": "down",
+                                    "entry_price": price_val,
+                                    "entry_row_index": rows_seen,
+                                    "entry_timestamp_ns": start_ns or end_ns,
+                                    "threshold": float(args.trade_threshold),
+                                    "resolution": resolution,
+                                    "bar_index": int(payload.get("bar_index", -1)),
+                                }
+                                next_trade_id += 1
+                                open_trades.append(trade)
+                                if eval_log_file is not None:
+                                    trade_evt = {
+                                        "event": "trade_open",
+                                        "trade_id": trade["id"],
+                                        "direction": trade["direction"],
+                                        "entry_price": trade["entry_price"],
+                                        "entry_row_index": trade["entry_row_index"],
+                                        "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                                    }
+                                    try:
+                                        eval_log_file.write(json.dumps(trade_evt) + "\n")
+                                    except Exception as exc:  # pragma: no cover - log-only
+                                        logging.debug("Failed to write trade_open event: %s", exc)
 
-                logging.info("%s", ", ".join(summary_parts))
+                # Update any open trades with the latest price
+                if args.replay_existing and open_trades and np.isfinite(price_val):
+                    tp = float(getattr(args, "eval_take_profit", 10.0))
+                    sl = float(getattr(args, "eval_stop_loss", 10.0))
+                    tp = tp if tp > 0 else 10.0
+                    sl = sl if sl > 0 else 10.0
+                    for trade in list(open_trades):
+                        move = price_val - trade["entry_price"]
+                        result: Optional[str] = None
+                        if trade["direction"] == "up":
+                            if move >= tp:
+                                result = "win"
+                            elif move <= -sl:
+                                result = "loss"
+                        else:
+                            # down trade: profit when price moves down
+                            if -move >= tp:
+                                result = "win"
+                            elif -move <= -sl:
+                                result = "loss"
+                        if result is None:
+                            continue
+
+                        trade["exit_price"] = price_val
+                        trade["exit_row_index"] = rows_seen
+                        trade["exit_timestamp_ns"] = end_ns or start_ns
+                        trade["result"] = result
+                        trade["pips_move"] = (
+                            price_val - trade["entry_price"]
+                            if trade["direction"] == "up"
+                            else trade["entry_price"] - price_val
+                        )
+                        trade["duration_rows"] = trade["exit_row_index"] - trade["entry_row_index"]
+                        completed_trades.append(trade)
+                        open_trades.remove(trade)
+
+                        if eval_log_file is not None:
+                            trade_evt = {
+                                "event": "trade_close",
+                                "trade_id": trade["id"],
+                                "direction": trade["direction"],
+                                "result": trade["result"],
+                                "entry_price": trade["entry_price"],
+                                "exit_price": trade["exit_price"],
+                                "pips_move": trade["pips_move"],
+                                "entry_row_index": trade["entry_row_index"],
+                                "exit_row_index": trade["exit_row_index"],
+                                "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                                "exit_timestamp_ns": trade["exit_timestamp_ns"],
+                            }
+                            try:
+                                eval_log_file.write(json.dumps(trade_evt) + "\n")
+                            except Exception as exc:  # pragma: no cover - log-only
+                                logging.debug("Failed to write trade_close event: %s", exc)
+
+                if args.replay_existing and total_rows and total_rows > 0 and progress_bar is not None:
+                    progress_bar.update(1)
+                    if summary_parts:
+                        progress_bar.set_postfix_str(", ".join(summary_parts))
+                else:
+                    logging.info("%s", ", ".join(summary_parts))
+
+                if eval_log_file is not None and args.replay_existing:
+                    record: Dict[str, Any] = {
+                        "event": "tick",
+                        "row_index": rows_seen,
+                        "bar_index": int(payload.get("bar_index", -1)),
+                        "resolution": resolution,
+                        "start_timestamp_ns": start_ns,
+                        "end_timestamp_ns": end_ns,
+                        "probs": per_target,
+                        "hotkey_trades": dict(eval_stats["hotkey_trades"]),
+                        "open_trades": len(open_trades),
+                    }
+                    try:
+                        eval_log_file.write(json.dumps(record) + "\n")
+                    except Exception as exc:  # pragma: no cover - log-only
+                        logging.debug("Failed to write eval log record: %s", exc)
+
                 last_idle_log = time.time()
     except KeyboardInterrupt:
         logging.info("Stopping realtime inference")
     finally:
         tail.close()
+        if progress_bar is not None:
+            try:
+                progress_bar.close()
+            except Exception:
+                pass
+        if eval_log_file is not None:
+            try:
+                eval_log_file.close()
+            except Exception:
+                pass
+        if eval_summary_path is not None and args.replay_existing and total_rows:
+            try:
+                # Build a JSON-serialisable summary structure.
+                serializable_stats: Dict[str, Any] = dict(eval_stats)
+                serializable_stats["rows_per_resolution"] = dict(eval_stats["rows_per_resolution"])
+                serializable_stats["threshold_sweep"] = {
+                    str(thr): data for thr, data in eval_stats["threshold_sweep"].items()
+                }
+
+                # Aggregate trade statistics
+                total_trades = len(completed_trades)
+                wins = sum(1 for t in completed_trades if t.get("result") == "win")
+                losses = sum(1 for t in completed_trades if t.get("result") == "loss")
+                up_trades = sum(1 for t in completed_trades if t.get("direction") == "up")
+                down_trades = sum(1 for t in completed_trades if t.get("direction") == "down")
+                net_pips = float(sum(float(t.get("pips_move", 0.0)) for t in completed_trades))
+                avg_pips = net_pips / total_trades if total_trades else 0.0
+                win_rate = (wins / total_trades) * 100.0 if total_trades else 0.0
+
+                # Per-hour win rates based on entry timestamp
+                trades_per_hour: Dict[str, Dict[str, Any]] = {}
+                for t in completed_trades:
+                    ts_ns = int(t.get("entry_timestamp_ns") or 0)
+                    if ts_ns <= 0:
+                        continue
+                    try:
+                        dt = datetime.utcfromtimestamp(ts_ns / 1e9)
+                        hour_key = f"{dt.hour:02d}:00"
+                    except Exception:
+                        hour_key = "unknown"
+                    bucket = trades_per_hour.setdefault(
+                        hour_key,
+                        {"entries": 0, "wins": 0, "losses": 0, "net_pips": 0.0},
+                    )
+                    bucket["entries"] += 1
+                    if t.get("result") == "win":
+                        bucket["wins"] += 1
+                    elif t.get("result") == "loss":
+                        bucket["losses"] += 1
+                    bucket["net_pips"] += float(t.get("pips_move", 0.0))
+
+                serializable_stats["trades"] = {
+                    "total": float(total_trades),
+                    "wins": float(wins),
+                    "losses": float(losses),
+                    "up_trades": float(up_trades),
+                    "down_trades": float(down_trades),
+                    "win_rate_pct": win_rate,
+                    "net_pips": net_pips,
+                    "avg_pips": avg_pips,
+                }
+                serializable_stats["trades_per_hour"] = trades_per_hour
+                serializable_stats["open_trades_remaining"] = len(open_trades)
+
+                eval_summary_path.parent.mkdir(parents=True, exist_ok=True)
+                with eval_summary_path.open("w", encoding="utf-8") as f:
+                    json.dump(serializable_stats, f, indent=2)
+                logging.info("Offline eval summary written to %s", eval_summary_path)
+            except Exception as exc:  # pragma: no cover - log-only
+                logging.warning("Failed to write eval summary to %s: %s", eval_summary_path, exc)
 
 
 def parse_args() -> argparse.Namespace:
@@ -550,6 +888,46 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Feature name to use as the reference price for entry gating "
             "(defaults to 'mid_close_price')."
+        ),
+    )
+    parser.add_argument(
+        "--eval-log-jsonl",
+        type=Path,
+        default=None,
+        help="Optional JSONL path for per-row offline evaluation logs (used with --replay-existing).",
+    )
+    parser.add_argument(
+        "--eval-summary-json",
+        type=Path,
+        default=None,
+        help="Optional JSON path for aggregated offline evaluation summary (used with --replay-existing).",
+    )
+    parser.add_argument(
+        "--eval-threshold-sweep",
+        type=float,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional list of probability thresholds to sweep when computing offline evaluation stats; "
+            "combined with --trade-threshold when provided."
+        ),
+    )
+    parser.add_argument(
+        "--eval-take-profit",
+        type=float,
+        default=10.0,
+        help=(
+            "Take-profit distance (in units of entry_price_feature) for offline-eval simulated trades "
+            "when replaying existing feature files."
+        ),
+    )
+    parser.add_argument(
+        "--eval-stop-loss",
+        type=float,
+        default=10.0,
+        help=(
+            "Stop-loss distance (in units of entry_price_feature) for offline-eval simulated trades "
+            "when replaying existing feature files."
         ),
     )
     return parser.parse_args()

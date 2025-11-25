@@ -2,6 +2,7 @@ use crate::domain::{Bar, BarAccumulator, BarKey, MarketEvent, Resolution};
 use crate::utils::time::align_to_resolution;
 
 /// Build chronological bars for a given resolution using the raw market events.
+#[allow(dead_code)]
 pub fn build_bars(events: &[MarketEvent], resolution: Resolution, levels: usize) -> Vec<Bar> {
     if events.is_empty() {
         return Vec::new();

@@ -40,6 +40,8 @@ pub struct RealtimeConfig {
     pub warmup_bars: usize,
     pub normalization_state: HashMap<Resolution, CausalScalerState>,
     pub session_reset_gap_ns: i128,
+    /// When true, exit once the source file reaches EOF instead of tailing forever.
+    pub exit_on_eof: bool,
 }
 
 /// Streaming feature payload emitted by the realtime preprocessor.
@@ -135,9 +137,16 @@ impl RealtimePreprocessor {
                     }
                     writer.flush().ok();
                 }
-                None => thread::sleep(cfg.poll_interval),
-            }
+                None => {
+                    if cfg.exit_on_eof {
+                        break Ok(());
+                    } else {
+                        thread::sleep(cfg.poll_interval);
+                    }
+                }
         }
+        writer.flush().ok();
+    }
     }
 
     fn process_reader<R: BufRead>(&mut self, reader: R, cfg: &RealtimeConfig) -> Result<()> {

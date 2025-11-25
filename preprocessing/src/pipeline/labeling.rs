@@ -18,6 +18,7 @@ impl LabelingEngine {
     }
 
     /// Convert a chronologically ordered stream of market events into labels.
+    #[allow(dead_code)]
     pub fn compute_labels(&self, events: &[MarketEvent]) -> Vec<Label> {
         let mid_series: Vec<MidPriceAnchor> = events
             .iter()
