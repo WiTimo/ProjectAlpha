@@ -1,0 +1,98 @@
+batch_size: 35000
+data_split:
+  test_ratio: 0.15
+  train_ratio: 0.7
+  validation_ratio: 0.15
+dry_run: false
+instrument:
+  levels: 5
+  symbol: NQ
+  tick_size: 0.25
+  venue: SIM
+io:
+  checkpoint_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\preprocessed_eval\.checkpoints
+  feature_output_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\preprocessed_eval
+  input_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\eval
+labeling:
+  targets:
+  - down_ticks: 20.0
+    horizon_seconds: 300
+    lookahead_events: 1200
+    name: t20
+    up_ticks: 20.0
+  - down_ticks: 40.0
+    horizon_seconds: 600
+    lookahead_events: 2400
+    name: t40
+    up_ticks: 40.0
+  - down_ticks: 60.0
+    horizon_seconds: 900
+    lookahead_events: 3600
+    name: t60
+    up_ticks: 60.0
+  - down_ticks: 100.0
+    horizon_seconds: 1500
+    lookahead_events: 6000
+    name: t100
+    up_ticks: 100.0
+normalization:
+  log_epsilon: 1.0e-12
+  rolling_count:
+    alpha: 0.02
+    window: 600
+  rolling_depth:
+    alpha: 0.02
+    window: 600
+  rolling_volume:
+    alpha: 0.02
+    window: 600
+resolutions:
+- aggregate_from: null
+  bar_seconds: 1
+  feature_groups:
+  - top_of_book
+  - depth
+  - order_flow
+  - trades
+  - volatility
+  - liquidity
+  - time_of_day
+  - regime
+  - cross_resolution
+  - meta
+  levels: 5
+  persist_raw_bars: false
+  resolution: fast
+- aggregate_from: fast
+  bar_seconds: 10
+  feature_groups:
+  - top_of_book
+  - depth
+  - order_flow
+  - trades
+  - volatility
+  - liquidity
+  - time_of_day
+  - regime
+  - cross_resolution
+  - meta
+  levels: 5
+  persist_raw_bars: false
+  resolution: mid
+- aggregate_from: mid
+  bar_seconds: 60
+  feature_groups:
+  - top_of_book
+  - depth
+  - order_flow
+  - trades
+  - volatility
+  - liquidity
+  - time_of_day
+  - regime
+  - cross_resolution
+  - meta
+  levels: 5
+  persist_raw_bars: false
+  resolution: slow
+skip_existing: true

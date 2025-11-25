@@ -10,7 +10,7 @@
     "training": "python training/tcn.py",
     "realtime": "cd preprocessing && cargo run --bin realtime -- --resolutions fast,mid,slow --source C:/Ninjatrader/L2Log.txt --emit ../runs/realtime/features.jsonl",
     "deployment": "cd deployment && python realtime_inference.py --model-bundle ../runs/models/best_model.pt --features ../runs/realtime/features.jsonl --resolutions fast mid slow --trade-threshold 0.75 --entry-min-price-move 10.0 --entry-price-feature mid_close_price",
-    "evaluation": "cargo build --manifest-path preprocessing/Cargo.toml && python evaluation/realtime_eval.py  --inference-extra-args --trade-threshold 0.6 --eval-threshold-sweep 0.5 0.6 0.7 0.75 0.8 0.85 0.9 --eval-take-profit 10.0 --eval-stop-loss 10.0"
+    "evaluation": "cargo build --manifest-path preprocessing/Cargo.toml && python evaluation/realtime_eval.py  --inference-extra-args --trade-threshold 0.9 --eval-threshold-sweep 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 --eval-take-profit 10.0 --eval-stop-loss 10.0"
   },
   "engines": {
     "node": ">=14"

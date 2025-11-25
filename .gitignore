@@ -1,5 +1,6 @@
 /data/**/*.csv
 /data/**/*.parquet
-/preprocessing/data
+/data/**/.checkpoints/*
 /runs/cache/**/*.npy
+/runs/cache_eval/**/*.npy
 **/features.jsonl
