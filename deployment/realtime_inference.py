@@ -250,6 +250,34 @@ def parse_feature_line(
     return payload, None
 
 
+def is_in_pause_window(timestamp_ns: int, start_min: Optional[int], end_min: Optional[int]) -> bool:
+    """Return True if the given data timestamp falls inside the configured pause window.
+
+    The window is defined in minutes-from-midnight (0-1440), based on the *data* time
+    carried by the feature stream (UTC). A wrapped window (e.g. 1320-60 for 22:00-01:00)
+    is supported.
+    """
+    if timestamp_ns <= 0 or start_min is None or end_min is None:
+        return False
+    try:
+        dt = datetime.utcfromtimestamp(timestamp_ns / 1e9)
+    except (OverflowError, OSError, ValueError):
+        return False
+    minute_of_day = dt.hour * 60 + dt.minute
+
+    if start_min == end_min:
+        # Empty window when equal; treat as no pause to avoid surprising behaviour.
+        return False
+
+    if 0 <= start_min < 1440 and 0 <= end_min < 1440:
+        if start_min < end_min:
+            return start_min <= minute_of_day < end_min
+        # Wrapped window over midnight.
+        return minute_of_day >= start_min or minute_of_day < end_min
+
+    return False
+
+
 def inference_loop(args: argparse.Namespace) -> None:
     bundle = load_model(Path(args.model_bundle))
     model_type = bundle.get("type", "tcn")
@@ -262,6 +290,7 @@ def inference_loop(args: argparse.Namespace) -> None:
     progress_bar = None
 
     eval_log_file = None
+    trigger_log_file = None
     eval_summary_path: Optional[Path] = getattr(args, "eval_summary_json", None)
     threshold_sweep: List[float] = list(getattr(args, "eval_threshold_sweep", []) or [])
     if args.trade_threshold is not None and args.trade_threshold not in threshold_sweep:
@@ -291,8 +320,21 @@ def inference_loop(args: argparse.Namespace) -> None:
             "entry_price_feature": args.entry_price_feature,
             "idle_log_seconds": args.idle_log_seconds,
             "poll_interval": args.poll_interval,
+            "pause_min_start": getattr(args, "pause_min_start", None),
+            "pause_min_end": getattr(args, "pause_min_end", None),
         },
     }
+
+    # Optional per-trigger log file (used mainly for live deployment).
+    trigger_log_path: Optional[Path] = getattr(args, "trigger_log_file", None)
+    if trigger_log_path is not None:
+        try:
+            trigger_log_path.parent.mkdir(parents=True, exist_ok=True)
+            trigger_log_file = trigger_log_path.open("a", encoding="utf-8")
+            logging.info("Trigger log will be written to %s", trigger_log_path)
+        except Exception as exc:  # pragma: no cover - log-only
+            logging.warning("Failed to open trigger log file %s: %s", trigger_log_path, exc)
+            trigger_log_file = None
 
     if args.replay_existing:
         try:
@@ -553,115 +595,140 @@ def inference_loop(args: argparse.Namespace) -> None:
                         up_prob_trigger = probs_for_trigger["up"]
                         down_prob_trigger = probs_for_trigger["down"]
 
-                        # Compute data-time timestamp (ns) for cooldown gating in offline mode
+                        # Compute data-time timestamp (ns) for pause-window checks and offline stats.
                         current_ts_ns = end_ns or start_ns or 0
+                        paused = is_in_pause_window(
+                            current_ts_ns,
+                            getattr(args, "pause_min_start", None),
+                            getattr(args, "pause_min_end", None),
+                        )
 
-                        def can_open(direction: str) -> tuple[bool, Optional[str]]:
-                            # Allow every qualifying signal to open a trade.
-                            # No cooldown and no single-open-trade restriction in any mode.
-                            return True, None
+                        def log_trigger(direction: str, prob: float) -> None:
+                            if trigger_log_file is None:
+                                return
+                            record: Dict[str, Any] = {
+                                "event": "trade_trigger",
+                                "direction": direction,
+                                "local_time": datetime.now().isoformat(),
+                                "trade_timestamp_ns": int(current_ts_ns) if current_ts_ns else None,
+                                "trade_time_utc": (
+                                    datetime.utcfromtimestamp(current_ts_ns / 1e9).isoformat()
+                                    if current_ts_ns
+                                    else None
+                                ),
+                                "probability": float(prob),
+                                "threshold": float(args.trade_threshold)
+                                if args.trade_threshold is not None
+                                else None,
+                                "resolution": resolution,
+                                "entry_price_feature": args.entry_price_feature,
+                                "entry_price": price_val if np.isfinite(price_val) else None,
+                                "row_index": rows_seen,
+                                "paused": paused,
+                            }
+                            try:
+                                trigger_log_file.write(json.dumps(record) + "\n")
+                                trigger_log_file.flush()
+                            except Exception as exc:  # pragma: no cover - log-only
+                                logging.debug("Failed to write trigger log record: %s", exc)
 
                         # Up trade trigger
-                        can_open_up, reason_up = can_open("up")
-                        if (
-                            up_prob_trigger >= args.trade_threshold
-                            and price_ok("up")
-                        ):
-                            if can_open_up:
-                                if enable_triggers and hotkey_emitter:
-                                    if hotkey_emitter.press(args.up_hotkey):
-                                        logging.info(
-                                            "Hotkey %s emitted for %s up=%.3f (>= %.3f) at price=%.2f",
-                                            args.up_hotkey,
-                                            trigger_label or target_columns[0],
-                                            up_prob_trigger,
-                                            args.trade_threshold,
-                                            price_val,
-                                        )
-                                if args.replay_existing and current_ts_ns > 0:
-                                    last_trigger_at_data["up"] = current_ts_ns
-                                else:
-                                    last_trigger_at_wall["up"] = time.time()
-                                last_entry_price["up"] = price_val if np.isfinite(price_val) else last_entry_price["up"]
-                                eval_stats["hotkey_trades"]["up"] += 1
+                        if up_prob_trigger >= args.trade_threshold and price_ok("up"):
+                            log_trigger("up", up_prob_trigger)
+                            if not paused and enable_triggers and hotkey_emitter:
+                                if hotkey_emitter.press(args.up_hotkey):
+                                    logging.info(
+                                        "Hotkey %s emitted for %s up=%.3f (>= %.3f) at price=%.2f",
+                                        args.up_hotkey,
+                                        trigger_label or target_columns[0],
+                                        up_prob_trigger,
+                                        args.trade_threshold,
+                                        price_val,
+                                    )
+                            if args.replay_existing and current_ts_ns > 0:
+                                last_trigger_at_data["up"] = current_ts_ns
+                            else:
+                                last_trigger_at_wall["up"] = time.time()
+                            last_entry_price["up"] = (
+                                price_val if np.isfinite(price_val) else last_entry_price["up"]
+                            )
+                            eval_stats["hotkey_trades"]["up"] += 1
 
-                                if args.replay_existing and np.isfinite(price_val):
-                                    trade = {
-                                        "id": next_trade_id,
-                                        "direction": "up",
-                                        "entry_price": price_val,
-                                        "entry_row_index": rows_seen,
-                                        "entry_timestamp_ns": current_ts_ns,
-                                        "threshold": float(args.trade_threshold),
-                                        "resolution": resolution,
-                                        "bar_index": int(payload.get("bar_index", -1)),
+                            if args.replay_existing and np.isfinite(price_val):
+                                trade = {
+                                    "id": next_trade_id,
+                                    "direction": "up",
+                                    "entry_price": price_val,
+                                    "entry_row_index": rows_seen,
+                                    "entry_timestamp_ns": current_ts_ns,
+                                    "threshold": float(args.trade_threshold),
+                                    "resolution": resolution,
+                                    "bar_index": int(payload.get("bar_index", -1)),
+                                }
+                                next_trade_id += 1
+                                open_trades.append(trade)
+                                if eval_log_file is not None:
+                                    trade_evt = {
+                                        "event": "trade_open",
+                                        "trade_id": trade["id"],
+                                        "direction": trade["direction"],
+                                        "entry_price": trade["entry_price"],
+                                        "entry_row_index": trade["entry_row_index"],
+                                        "entry_timestamp_ns": trade["entry_timestamp_ns"],
                                     }
-                                    next_trade_id += 1
-                                    open_trades.append(trade)
-                                    if eval_log_file is not None:
-                                        trade_evt = {
-                                            "event": "trade_open",
-                                            "trade_id": trade["id"],
-                                            "direction": trade["direction"],
-                                            "entry_price": trade["entry_price"],
-                                            "entry_row_index": trade["entry_row_index"],
-                                            "entry_timestamp_ns": trade["entry_timestamp_ns"],
-                                        }
-                                        try:
-                                            eval_log_file.write(json.dumps(trade_evt) + "\n")
-                                        except Exception as exc:  # pragma: no cover - log-only
-                                            logging.debug("Failed to write trade_open event: %s", exc)
+                                    try:
+                                        eval_log_file.write(json.dumps(trade_evt) + "\n")
+                                    except Exception as exc:  # pragma: no cover - log-only
+                                        logging.debug("Failed to write trade_open event: %s", exc)
 
                         # Down trade trigger
-                        can_open_down, reason_down = can_open("down")
-                        if (
-                            down_prob_trigger >= args.trade_threshold
-                            and price_ok("down")
-                        ):
-                            if can_open_down:
-                                if enable_triggers and hotkey_emitter:
-                                    if hotkey_emitter.press(args.down_hotkey):
-                                        logging.info(
-                                            "Hotkey %s emitted for %s down=%.3f (>= %.3f) at price=%.2f",
-                                            args.down_hotkey,
-                                            trigger_label or target_columns[0],
-                                            down_prob_trigger,
-                                            args.trade_threshold,
-                                            price_val,
-                                        )
-                                if args.replay_existing and current_ts_ns > 0:
-                                    last_trigger_at_data["down"] = current_ts_ns
-                                else:
-                                    last_trigger_at_wall["down"] = time.time()
-                                last_entry_price["down"] = price_val if np.isfinite(price_val) else last_entry_price["down"]
-                                eval_stats["hotkey_trades"]["down"] += 1
+                        if down_prob_trigger >= args.trade_threshold and price_ok("down"):
+                            log_trigger("down", down_prob_trigger)
+                            if not paused and enable_triggers and hotkey_emitter:
+                                if hotkey_emitter.press(args.down_hotkey):
+                                    logging.info(
+                                        "Hotkey %s emitted for %s down=%.3f (>= %.3f) at price=%.2f",
+                                        args.down_hotkey,
+                                        trigger_label or target_columns[0],
+                                        down_prob_trigger,
+                                        args.trade_threshold,
+                                        price_val,
+                                    )
+                            if args.replay_existing and current_ts_ns > 0:
+                                last_trigger_at_data["down"] = current_ts_ns
+                            else:
+                                last_trigger_at_wall["down"] = time.time()
+                            last_entry_price["down"] = (
+                                price_val if np.isfinite(price_val) else last_entry_price["down"]
+                            )
+                            eval_stats["hotkey_trades"]["down"] += 1
 
-                                if args.replay_existing and np.isfinite(price_val):
-                                    trade = {
-                                        "id": next_trade_id,
-                                        "direction": "down",
-                                        "entry_price": price_val,
-                                        "entry_row_index": rows_seen,
-                                        "entry_timestamp_ns": current_ts_ns,
-                                        "threshold": float(args.trade_threshold),
-                                        "resolution": resolution,
-                                        "bar_index": int(payload.get("bar_index", -1)),
+                            if args.replay_existing and np.isfinite(price_val):
+                                trade = {
+                                    "id": next_trade_id,
+                                    "direction": "down",
+                                    "entry_price": price_val,
+                                    "entry_row_index": rows_seen,
+                                    "entry_timestamp_ns": current_ts_ns,
+                                    "threshold": float(args.trade_threshold),
+                                    "resolution": resolution,
+                                    "bar_index": int(payload.get("bar_index", -1)),
+                                }
+                                next_trade_id += 1
+                                open_trades.append(trade)
+                                if eval_log_file is not None:
+                                    trade_evt = {
+                                        "event": "trade_open",
+                                        "trade_id": trade["id"],
+                                        "direction": trade["direction"],
+                                        "entry_price": trade["entry_price"],
+                                        "entry_row_index": trade["entry_row_index"],
+                                        "entry_timestamp_ns": trade["entry_timestamp_ns"],
                                     }
-                                    next_trade_id += 1
-                                    open_trades.append(trade)
-                                    if eval_log_file is not None:
-                                        trade_evt = {
-                                            "event": "trade_open",
-                                            "trade_id": trade["id"],
-                                            "direction": trade["direction"],
-                                            "entry_price": trade["entry_price"],
-                                            "entry_row_index": trade["entry_row_index"],
-                                            "entry_timestamp_ns": trade["entry_timestamp_ns"],
-                                        }
-                                        try:
-                                            eval_log_file.write(json.dumps(trade_evt) + "\n")
-                                        except Exception as exc:  # pragma: no cover - log-only
-                                            logging.debug("Failed to write trade_open event: %s", exc)
+                                    try:
+                                        eval_log_file.write(json.dumps(trade_evt) + "\n")
+                                    except Exception as exc:  # pragma: no cover - log-only
+                                        logging.debug("Failed to write trade_open event: %s", exc)
 
                 # Update any open trades with the latest price
                 if args.replay_existing and open_trades and np.isfinite(price_val):
@@ -755,6 +822,11 @@ def inference_loop(args: argparse.Namespace) -> None:
         if eval_log_file is not None:
             try:
                 eval_log_file.close()
+            except Exception:
+                pass
+        if trigger_log_file is not None:
+            try:
+                trigger_log_file.close()
             except Exception:
                 pass
         if eval_summary_path is not None and args.replay_existing and total_rows:
@@ -973,6 +1045,32 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Stop-loss distance (in units of entry_price_feature) for offline-eval simulated trades "
             "when replaying existing feature files."
+        ),
+    )
+    parser.add_argument(
+        "--trigger-log-file",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSONL path where each qualifying trade trigger is logged with local and data timestamps."
+        ),
+    )
+    parser.add_argument(
+        "--pause-min-start",
+        type=int,
+        default=None,
+        help=(
+            "Optional pause window start in minutes from 00:00 (data time). "
+            "When set together with --pause-min-end, hotkeying is disabled inside this window."
+        ),
+    )
+    parser.add_argument(
+        "--pause-min-end",
+        type=int,
+        default=None,
+        help=(
+            "Optional pause window end in minutes from 00:00 (data time). "
+            "Supports wrapping windows when end < start (e.g. 1320-60 for 22:00-01:00)."
         ),
     )
     return parser.parse_args()
