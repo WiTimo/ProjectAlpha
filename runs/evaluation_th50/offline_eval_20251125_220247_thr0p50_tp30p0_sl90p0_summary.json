@@ -1,0 +1,181 @@
+{
+  "rows_total": 204331,
+  "rows_parsed": 204331,
+  "rows_per_resolution": {
+    "fast": 204331
+  },
+  "threshold_sweep": {
+    "0.5": {
+      "up_triggers": 39464,
+      "down_triggers": 36052,
+      "either_triggers": 75516
+    }
+  },
+  "hotkey_trades": {
+    "up": 39464,
+    "down": 36052
+  },
+  "first_start_timestamp_ns": 1703138463000000000,
+  "last_end_timestamp_ns": 1704261589000000000,
+  "config": {
+    "trade_threshold": 0.5,
+    "trigger_target": null,
+    "up_hotkey": "CTRL+F11",
+    "down_hotkey": "CTRL+F12",
+    "entry_min_price_move": 0.0,
+    "entry_price_feature": "mid_close_price",
+    "idle_log_seconds": 30.0,
+    "poll_interval": 0.25
+  },
+  "trades": {
+    "total": 74922.0,
+    "wins": 53599.0,
+    "losses": 21323.0,
+    "up_trades": 39065.0,
+    "down_trades": 35857.0,
+    "win_rate_pct": 71.53973465737701,
+    "net_pips": -100345.125,
+    "avg_pips": -1.3393279010170578
+  },
+  "trades_per_hour": {
+    "09:00": {
+      "entries": 277,
+      "wins": 168,
+      "losses": 109,
+      "net_pips": -1073.0
+    },
+    "11:00": {
+      "entries": 68,
+      "wins": 53,
+      "losses": 15,
+      "net_pips": 452.5
+    },
+    "10:00": {
+      "entries": 171,
+      "wins": 162,
+      "losses": 9,
+      "net_pips": 6157.125
+    },
+    "14:00": {
+      "entries": 3604,
+      "wins": 2979,
+      "losses": 625,
+      "net_pips": 33986.0
+    },
+    "13:00": {
+      "entries": 697,
+      "wins": 510,
+      "losses": 187,
+      "net_pips": -1324.375
+    },
+    "15:00": {
+      "entries": 9270,
+      "wins": 6431,
+      "losses": 2839,
+      "net_pips": -75014.125
+    },
+    "16:00": {
+      "entries": 14117,
+      "wins": 10106,
+      "losses": 4011,
+      "net_pips": -43204.125
+    },
+    "17:00": {
+      "entries": 10080,
+      "wins": 7560,
+      "losses": 2520,
+      "net_pips": 4201.875
+    },
+    "18:00": {
+      "entries": 7645,
+      "wins": 4618,
+      "losses": 3027,
+      "net_pips": -129944.75
+    },
+    "19:00": {
+      "entries": 7279,
+      "wins": 4826,
+      "losses": 2453,
+      "net_pips": -68176.5
+    },
+    "20:00": {
+      "entries": 9920,
+      "wins": 7319,
+      "losses": 2601,
+      "net_pips": 46379.625
+    },
+    "21:00": {
+      "entries": 8773,
+      "wins": 6508,
+      "losses": 2265,
+      "net_pips": 93583.125
+    },
+    "00:00": {
+      "entries": 113,
+      "wins": 108,
+      "losses": 5,
+      "net_pips": 2895.75
+    },
+    "22:00": {
+      "entries": 1164,
+      "wins": 1016,
+      "losses": 148,
+      "net_pips": 36893.75
+    },
+    "07:00": {
+      "entries": 25,
+      "wins": 15,
+      "losses": 10,
+      "net_pips": -471.625
+    },
+    "03:00": {
+      "entries": 19,
+      "wins": 4,
+      "losses": 15,
+      "net_pips": -1236.875
+    },
+    "02:00": {
+      "entries": 180,
+      "wins": 73,
+      "losses": 107,
+      "net_pips": -8126.0
+    },
+    "12:00": {
+      "entries": 1362,
+      "wins": 989,
+      "losses": 373,
+      "net_pips": -3796.625
+    },
+    "01:00": {
+      "entries": 59,
+      "wins": 59,
+      "losses": 0,
+      "net_pips": 3083.125
+    },
+    "06:00": {
+      "entries": 59,
+      "wins": 57,
+      "losses": 2,
+      "net_pips": 1548.375
+    },
+    "08:00": {
+      "entries": 15,
+      "wins": 13,
+      "losses": 2,
+      "net_pips": 807.25
+    },
+    "05:00": {
+      "entries": 24,
+      "wins": 24,
+      "losses": 0,
+      "net_pips": 2004.0
+    },
+    "23:00": {
+      "entries": 1,
+      "wins": 1,
+      "losses": 0,
+      "net_pips": 30.375
+    }
+  },
+  "open_trades_remaining": 594
+}

@@ -271,9 +271,15 @@ def inference_loop(args: argparse.Namespace) -> None:
         "rows_total": 0,
         "rows_parsed": 0,
         "rows_per_resolution": Counter(),
-        "threshold_sweep": {float(t): {"up_triggers": 0, "down_triggers": 0, "either_triggers": 0} for t in threshold_sweep},
+        "threshold_sweep": {
+            float(t): {
+                "up_triggers": 0,
+                "down_triggers": 0,
+                "either_triggers": 0,
+            }
+            for t in threshold_sweep
+        },
         "hotkey_trades": {"up": 0, "down": 0},
-        "suppressed_trades": {"cooldown": 0, "open_trade": 0},
         "first_start_timestamp_ns": None,
         "last_end_timestamp_ns": None,
         "config": {
@@ -551,21 +557,8 @@ def inference_loop(args: argparse.Namespace) -> None:
                         current_ts_ns = end_ns or start_ns or 0
 
                         def can_open(direction: str) -> tuple[bool, Optional[str]]:
-                            # Offline replay: enforce cooldown and single open trade using data time
-                            if args.replay_existing and current_ts_ns > 0:
-                                cooldown_ns = int(float(args.trigger_cooldown) * 1e9)
-                                last_ts = last_trigger_at_data[direction]
-                                time_ok = last_ts is None or (current_ts_ns - last_ts) >= cooldown_ns
-                                if open_trades:
-                                    return False, "open_trade"
-                                if not time_ok:
-                                    return False, "cooldown"
-                                return True, None
-                            # Live mode: only enforce wall-clock cooldown
-                            now_wall = time.time()
-                            time_ok = now_wall - last_trigger_at_wall[direction] >= args.trigger_cooldown
-                            if not time_ok:
-                                return False, "cooldown"
+                            # Allow every qualifying signal to open a trade.
+                            # No cooldown and no single-open-trade restriction in any mode.
                             return True, None
 
                         # Up trade trigger
@@ -574,22 +567,7 @@ def inference_loop(args: argparse.Namespace) -> None:
                             up_prob_trigger >= args.trade_threshold
                             and price_ok("up")
                         ):
-                            if not can_open_up:
-                                eval_stats["suppressed_trades"][reason_up] += 1  # type: ignore[index]
-                                if eval_log_file is not None and args.replay_existing:
-                                    evt = {
-                                        "event": "trade_suppressed",
-                                        "reason": reason_up,
-                                        "direction": "up",
-                                        "row_index": rows_seen,
-                                        "timestamp_ns": current_ts_ns,
-                                        "price": price_val,
-                                    }
-                                    try:
-                                        eval_log_file.write(json.dumps(evt) + "\n")
-                                    except Exception as exc:  # pragma: no cover - log-only
-                                        logging.debug("Failed to write trade_suppressed event: %s", exc)
-                            else:
+                            if can_open_up:
                                 if enable_triggers and hotkey_emitter:
                                     if hotkey_emitter.press(args.up_hotkey):
                                         logging.info(
@@ -640,22 +618,7 @@ def inference_loop(args: argparse.Namespace) -> None:
                             down_prob_trigger >= args.trade_threshold
                             and price_ok("down")
                         ):
-                            if not can_open_down:
-                                eval_stats["suppressed_trades"][reason_down] += 1  # type: ignore[index]
-                                if eval_log_file is not None and args.replay_existing:
-                                    evt = {
-                                        "event": "trade_suppressed",
-                                        "reason": reason_down,
-                                        "direction": "down",
-                                        "row_index": rows_seen,
-                                        "timestamp_ns": current_ts_ns,
-                                        "price": price_val,
-                                    }
-                                    try:
-                                        eval_log_file.write(json.dumps(evt) + "\n")
-                                    except Exception as exc:  # pragma: no cover - log-only
-                                        logging.debug("Failed to write trade_suppressed event: %s", exc)
-                            else:
+                            if can_open_down:
                                 if enable_triggers and hotkey_emitter:
                                     if hotkey_emitter.press(args.down_hotkey):
                                         logging.info(
@@ -810,22 +773,29 @@ def inference_loop(args: argparse.Namespace) -> None:
                 up_trades = sum(1 for t in completed_trades if t.get("direction") == "up")
                 down_trades = sum(1 for t in completed_trades if t.get("direction") == "down")
                 net_pips = float(sum(float(t.get("pips_move", 0.0)) for t in completed_trades))
+                total_win_pips = float(
+                    sum(float(t.get("pips_move", 0.0)) for t in completed_trades if t.get("result") == "win")
+                )
+                total_loss_pips = float(
+                    sum(float(t.get("pips_move", 0.0)) for t in completed_trades if t.get("result") == "loss")
+                )
                 avg_pips = net_pips / total_trades if total_trades else 0.0
                 win_rate = (wins / total_trades) * 100.0 if total_trades else 0.0
 
-                # Per-hour win rates based on entry timestamp
-                trades_per_hour: Dict[str, Dict[str, Any]] = {}
+                # Per-half-hour win rates based on entry timestamp
+                trades_per_half_hour: Dict[str, Dict[str, Any]] = {}
                 for t in completed_trades:
                     ts_ns = int(t.get("entry_timestamp_ns") or 0)
                     if ts_ns <= 0:
                         continue
                     try:
                         dt = datetime.utcfromtimestamp(ts_ns / 1e9)
-                        hour_key = f"{dt.hour:02d}:00"
+                        slot_minute = 0 if dt.minute < 30 else 30
+                        slot_key = f"{dt.hour:02d}:{slot_minute:02d}"
                     except Exception:
-                        hour_key = "unknown"
-                    bucket = trades_per_hour.setdefault(
-                        hour_key,
+                        slot_key = "unknown"
+                    bucket = trades_per_half_hour.setdefault(
+                        slot_key,
                         {"entries": 0, "wins": 0, "losses": 0, "net_pips": 0.0},
                     )
                     bucket["entries"] += 1
@@ -845,8 +815,19 @@ def inference_loop(args: argparse.Namespace) -> None:
                     "net_pips": net_pips,
                     "avg_pips": avg_pips,
                 }
-                serializable_stats["trades_per_hour"] = trades_per_hour
+                serializable_stats["trades"]["total_win_pips"] = total_win_pips
+                serializable_stats["trades"]["total_loss_pips"] = total_loss_pips
+                serializable_stats["trades_per_half_hour"] = trades_per_half_hour
                 serializable_stats["open_trades_remaining"] = len(open_trades)
+
+                # Persist evaluation parameters (thresholds, TP, SL) alongside stats.
+                eval_params: Dict[str, Any] = {
+                    "trade_threshold": args.trade_threshold,
+                    "eval_threshold_sweep": list(getattr(args, "eval_threshold_sweep", []) or []),
+                    "take_profit": float(getattr(args, "eval_take_profit", 0.0)),
+                    "stop_loss": float(getattr(args, "eval_stop_loss", 0.0)),
+                }
+                serializable_stats["eval_params"] = eval_params
 
                 eval_summary_path.parent.mkdir(parents=True, exist_ok=True)
                 with eval_summary_path.open("w", encoding="utf-8") as f:
