@@ -357,9 +357,13 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
             summary_name = (
                 f"offline_eval_{base_timestamp}_thr{thr_str}_tp{tp_str}_sl{sl_str}_summary.json"
             )
+            trades_name = (
+                f"offline_eval_{base_timestamp}_thr{thr_str}_tp{tp_str}_sl{sl_str}_trades.jsonl"
+            )
 
             eval_log_jsonl = args.output_dir / log_name
             eval_summary_json = args.output_dir / summary_name
+            eval_trades_jsonl = args.output_dir / trades_name
 
             cmd: list[str] = [
                 *base_cmd_prefix,
@@ -367,6 +371,8 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
                 str(eval_log_jsonl),
                 "--eval-summary-json",
                 str(eval_summary_json),
+                "--eval-trades-jsonl",
+                str(eval_trades_jsonl),
             ]
 
             cmd += list(extra)
@@ -395,6 +401,7 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
                     "stop_loss": sl,
                     "log_path": str(eval_log_jsonl),
                     "summary_path": str(eval_summary_json),
+                    "trades_path": str(eval_trades_jsonl),
                 }
             )
 
@@ -423,9 +430,13 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
                     summary_name = (
                         f"offline_eval_{base_timestamp}_thr{thr_str}_tp{tp_str}_sl{sl_str}_summary.json"
                     )
+                    trades_name = (
+                        f"offline_eval_{base_timestamp}_thr{thr_str}_tp{tp_str}_sl{sl_str}_trades.jsonl"
+                    )
 
                     eval_log_jsonl = args.output_dir / log_name
                     eval_summary_json = args.output_dir / summary_name
+                    eval_trades_jsonl = args.output_dir / trades_name
 
                     cmd: list[str] = [
                         *base_cmd_prefix,
@@ -433,6 +444,8 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
                         str(eval_log_jsonl),
                         "--eval-summary-json",
                         str(eval_summary_json),
+                        "--eval-trades-jsonl",
+                        str(eval_trades_jsonl),
                     ]
 
                     # Let caller still provide extra args, but ensure that our
@@ -463,6 +476,7 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
                             "stop_loss": sl,
                             "log_path": str(eval_log_jsonl),
                             "summary_path": str(eval_summary_json),
+                            "trades_path": str(eval_trades_jsonl),
                         }
                     )
 
@@ -481,6 +495,7 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
     # Legacy single-run mode: behave exactly as before.
     eval_log_jsonl = args.output_dir / f"offline_eval_{base_timestamp}.jsonl"
     eval_summary_json = args.output_dir / f"offline_eval_{base_timestamp}_summary.json"
+    eval_trades_jsonl = args.output_dir / f"offline_eval_{base_timestamp}_trades.jsonl"
 
     cmd = [
         *base_cmd_prefix,
@@ -488,6 +503,8 @@ def run_inference(features_path: Path, args: argparse.Namespace) -> None:
         str(eval_log_jsonl),
         "--eval-summary-json",
         str(eval_summary_json),
+        "--eval-trades-jsonl",
+        str(eval_trades_jsonl),
         "--eval-threshold-sweep",
         "0.50",
         "0.60",

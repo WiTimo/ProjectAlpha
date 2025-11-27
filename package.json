@@ -9,7 +9,7 @@
     "packages": "python -m pip install -r training/requirements.txt && python -m pip install -r deployment/requirements.txt",
     "training": "python training/tcn.py",
     "realtime": "cd preprocessing && cargo run --bin realtime -- --resolutions fast,mid,slow --source C:/Ninjatrader/L2Log.txt --emit ../runs/realtime/features.jsonl",
-    "deployment": "cd deployment && python realtime_inference.py --model-bundle ../runs/models/best_model.pt --features ../runs/realtime/features.jsonl --resolutions fast mid slow --trade-threshold 0.90 --entry-price-feature mid_close_price --trigger-log-file ../runs/deployment/trade_triggers.jsonl --pause-min-start 930 --pause-min-end 1080",
+    "deployment": "cd deployment && python realtime_inference.py --model-bundle ../runs/models/best_model.pt --features ../runs/realtime/features.jsonl --resolutions fast mid slow --trade-threshold 0.70 --entry-price-feature mid_close_price --trigger-log-file ../runs/deployment/trade_triggers.jsonl --eval-trades-jsonl ../runs/deployment/trades.jsonl --pause-min-start 930 --pause-min-end 1080",
     "evaluation": "cargo build --manifest-path preprocessing/Cargo.toml && python evaluation/realtime_eval.py --sweep-config-yaml evaluation/sweep_config.yaml"
   },
   "engines": {

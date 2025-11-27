@@ -278,6 +278,63 @@ def is_in_pause_window(timestamp_ns: int, start_min: Optional[int], end_min: Opt
     return False
 
 
+def aggregate_trades_by_time(
+    trades: List[Dict[str, Any]], window_seconds: float = 120.0
+) -> List[Dict[str, Any]]:
+    """Aggregate sequential completed trades into time-based clusters.
+
+    Trades whose *entry* timestamps are within `window_seconds` of the previous
+    trade's entry are merged into a single logical trade. PnL is summed and the
+    result label is recomputed from the aggregated pips.
+    """
+    if not trades:
+        return []
+
+    sorted_trades = sorted(
+        trades, key=lambda t: int(t.get("entry_timestamp_ns") or 0)
+    )
+    window_ns = int(window_seconds * 1e9)
+
+    aggregated: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+
+    for trade in sorted_trades:
+        entry_ns = int(trade.get("entry_timestamp_ns") or 0)
+        if current is None:
+            current = dict(trade)
+            continue
+
+        prev_entry_ns = int(current.get("entry_timestamp_ns") or 0)
+        if entry_ns > 0 and prev_entry_ns > 0 and entry_ns - prev_entry_ns <= window_ns:
+            # Merge into current cluster: extend exit and accumulate PnL/duration.
+            current["exit_timestamp_ns"] = trade.get("exit_timestamp_ns")
+            current["exit_price"] = trade.get("exit_price")
+            current["pips_move"] = float(current.get("pips_move", 0.0)) + float(
+                trade.get("pips_move", 0.0)
+            )
+            current["duration_rows"] = int(current.get("duration_rows", 0)) + int(
+                trade.get("duration_rows", 0)
+            )
+        else:
+            aggregated.append(current)
+            current = dict(trade)
+
+    if current is not None:
+        aggregated.append(current)
+
+    # Recompute win/loss label from aggregated pips.
+    for t in aggregated:
+        pips = float(t.get("pips_move", 0.0))
+        if pips > 0:
+            t["result"] = "win"
+        elif pips < 0:
+            t["result"] = "loss"
+        else:
+            t["result"] = "flat"
+
+    return aggregated
+
+
 def inference_loop(args: argparse.Namespace) -> None:
     bundle = load_model(Path(args.model_bundle))
     model_type = bundle.get("type", "tcn")
@@ -437,6 +494,7 @@ def inference_loop(args: argparse.Namespace) -> None:
     last_trigger_at_data: Dict[str, Optional[int]] = {"up": None, "down": None}
 
     last_entry_price: Dict[str, Optional[float]] = {"up": None, "down": None}
+    last_entry_timestamp_ns: Optional[int] = None
 
     logging.info(
         "Model loaded (features=%d, sequence_len=%d, targets=%s)",
@@ -654,32 +712,41 @@ def inference_loop(args: argparse.Namespace) -> None:
                             )
                             eval_stats["hotkey_trades"]["up"] += 1
 
-                            if args.replay_existing and np.isfinite(price_val):
-                                trade = {
-                                    "id": next_trade_id,
-                                    "direction": "up",
-                                    "entry_price": price_val,
-                                    "entry_row_index": rows_seen,
-                                    "entry_timestamp_ns": current_ts_ns,
-                                    "threshold": float(args.trade_threshold),
-                                    "resolution": resolution,
-                                    "bar_index": int(payload.get("bar_index", -1)),
-                                }
-                                next_trade_id += 1
-                                open_trades.append(trade)
-                                if eval_log_file is not None:
-                                    trade_evt = {
-                                        "event": "trade_open",
-                                        "trade_id": trade["id"],
-                                        "direction": trade["direction"],
-                                        "entry_price": trade["entry_price"],
-                                        "entry_row_index": trade["entry_row_index"],
-                                        "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                            # Simulated trade state: only allow opening a new trade if
+                            # there is no open trade and at least 2 minutes
+                            # have passed since the previous entry.
+                            if np.isfinite(price_val):
+                                can_open = not open_trades
+                                if can_open and current_ts_ns > 0 and last_entry_timestamp_ns is not None:
+                                    if current_ts_ns - last_entry_timestamp_ns < int(120 * 60 * 1e9):
+                                        can_open = False
+                                if can_open:
+                                    trade = {
+                                        "id": next_trade_id,
+                                        "direction": "up",
+                                        "entry_price": price_val,
+                                        "entry_row_index": rows_seen,
+                                        "entry_timestamp_ns": current_ts_ns,
+                                        "threshold": float(args.trade_threshold),
+                                        "resolution": resolution,
+                                        "bar_index": int(payload.get("bar_index", -1)),
                                     }
-                                    try:
-                                        eval_log_file.write(json.dumps(trade_evt) + "\n")
-                                    except Exception as exc:  # pragma: no cover - log-only
-                                        logging.debug("Failed to write trade_open event: %s", exc)
+                                    next_trade_id += 1
+                                    open_trades.append(trade)
+                                    last_entry_timestamp_ns = current_ts_ns
+                                    if eval_log_file is not None:
+                                        trade_evt = {
+                                            "event": "trade_open",
+                                            "trade_id": trade["id"],
+                                            "direction": trade["direction"],
+                                            "entry_price": trade["entry_price"],
+                                            "entry_row_index": trade["entry_row_index"],
+                                            "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                                        }
+                                        try:
+                                            eval_log_file.write(json.dumps(trade_evt) + "\n")
+                                        except Exception as exc:  # pragma: no cover - log-only
+                                            logging.debug("Failed to write trade_open event: %s", exc)
 
                         # Down trade trigger
                         if down_prob_trigger >= args.trade_threshold and price_ok("down"):
@@ -703,35 +770,42 @@ def inference_loop(args: argparse.Namespace) -> None:
                             )
                             eval_stats["hotkey_trades"]["down"] += 1
 
-                            if args.replay_existing and np.isfinite(price_val):
-                                trade = {
-                                    "id": next_trade_id,
-                                    "direction": "down",
-                                    "entry_price": price_val,
-                                    "entry_row_index": rows_seen,
-                                    "entry_timestamp_ns": current_ts_ns,
-                                    "threshold": float(args.trade_threshold),
-                                    "resolution": resolution,
-                                    "bar_index": int(payload.get("bar_index", -1)),
-                                }
-                                next_trade_id += 1
-                                open_trades.append(trade)
-                                if eval_log_file is not None:
-                                    trade_evt = {
-                                        "event": "trade_open",
-                                        "trade_id": trade["id"],
-                                        "direction": trade["direction"],
-                                        "entry_price": trade["entry_price"],
-                                        "entry_row_index": trade["entry_row_index"],
-                                        "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                            # Simulated trade state: one-at-a-time trades with 2 minute cooldown.
+                            if np.isfinite(price_val):
+                                can_open = not open_trades
+                                if can_open and current_ts_ns > 0 and last_entry_timestamp_ns is not None:
+                                    if current_ts_ns - last_entry_timestamp_ns < int(120 * 60 * 1e9):
+                                        can_open = False
+                                if can_open:
+                                    trade = {
+                                        "id": next_trade_id,
+                                        "direction": "down",
+                                        "entry_price": price_val,
+                                        "entry_row_index": rows_seen,
+                                        "entry_timestamp_ns": current_ts_ns,
+                                        "threshold": float(args.trade_threshold),
+                                        "resolution": resolution,
+                                        "bar_index": int(payload.get("bar_index", -1)),
                                     }
-                                    try:
-                                        eval_log_file.write(json.dumps(trade_evt) + "\n")
-                                    except Exception as exc:  # pragma: no cover - log-only
-                                        logging.debug("Failed to write trade_open event: %s", exc)
+                                    next_trade_id += 1
+                                    open_trades.append(trade)
+                                    last_entry_timestamp_ns = current_ts_ns
+                                    if eval_log_file is not None:
+                                        trade_evt = {
+                                            "event": "trade_open",
+                                            "trade_id": trade["id"],
+                                            "direction": trade["direction"],
+                                            "entry_price": trade["entry_price"],
+                                            "entry_row_index": trade["entry_row_index"],
+                                            "entry_timestamp_ns": trade["entry_timestamp_ns"],
+                                        }
+                                        try:
+                                            eval_log_file.write(json.dumps(trade_evt) + "\n")
+                                        except Exception as exc:  # pragma: no cover - log-only
+                                            logging.debug("Failed to write trade_open event: %s", exc)
 
                 # Update any open trades with the latest price
-                if args.replay_existing and open_trades and np.isfinite(price_val):
+                if open_trades and np.isfinite(price_val):
                     tp = float(getattr(args, "eval_take_profit", 10.0))
                     sl = float(getattr(args, "eval_stop_loss", 10.0))
                     tp = tp if tp > 0 else 10.0
@@ -829,6 +903,9 @@ def inference_loop(args: argparse.Namespace) -> None:
                 trigger_log_file.close()
             except Exception:
                 pass
+        # Build aggregated trade statistics for offline summaries or optional JSONL logs.
+        aggregated_trades = aggregate_trades_by_time(completed_trades, window_seconds=120.0)
+
         if eval_summary_path is not None and args.replay_existing and total_rows:
             try:
                 # Build a JSON-serialisable summary structure.
@@ -838,25 +915,24 @@ def inference_loop(args: argparse.Namespace) -> None:
                     str(thr): data for thr, data in eval_stats["threshold_sweep"].items()
                 }
 
-                # Aggregate trade statistics
-                total_trades = len(completed_trades)
-                wins = sum(1 for t in completed_trades if t.get("result") == "win")
-                losses = sum(1 for t in completed_trades if t.get("result") == "loss")
-                up_trades = sum(1 for t in completed_trades if t.get("direction") == "up")
-                down_trades = sum(1 for t in completed_trades if t.get("direction") == "down")
-                net_pips = float(sum(float(t.get("pips_move", 0.0)) for t in completed_trades))
+                total_trades = len(aggregated_trades)
+                wins = sum(1 for t in aggregated_trades if t.get("result") == "win")
+                losses = sum(1 for t in aggregated_trades if t.get("result") == "loss")
+                up_trades = sum(1 for t in aggregated_trades if t.get("direction") == "up")
+                down_trades = sum(1 for t in aggregated_trades if t.get("direction") == "down")
+                net_pips = float(sum(float(t.get("pips_move", 0.0)) for t in aggregated_trades))
                 total_win_pips = float(
-                    sum(float(t.get("pips_move", 0.0)) for t in completed_trades if t.get("result") == "win")
+                    sum(float(t.get("pips_move", 0.0)) for t in aggregated_trades if t.get("result") == "win")
                 )
                 total_loss_pips = float(
-                    sum(float(t.get("pips_move", 0.0)) for t in completed_trades if t.get("result") == "loss")
+                    sum(float(t.get("pips_move", 0.0)) for t in aggregated_trades if t.get("result") == "loss")
                 )
                 avg_pips = net_pips / total_trades if total_trades else 0.0
                 win_rate = (wins / total_trades) * 100.0 if total_trades else 0.0
 
                 # Per-half-hour win rates based on entry timestamp
                 trades_per_half_hour: Dict[str, Dict[str, Any]] = {}
-                for t in completed_trades:
+                for t in aggregated_trades:
                     ts_ns = int(t.get("entry_timestamp_ns") or 0)
                     if ts_ns <= 0:
                         continue
@@ -907,6 +983,37 @@ def inference_loop(args: argparse.Namespace) -> None:
                 logging.info("Offline eval summary written to %s", eval_summary_path)
             except Exception as exc:  # pragma: no cover - log-only
                 logging.warning("Failed to write eval summary to %s: %s", eval_summary_path, exc)
+
+        # Optionally write per-trade summary JSONL with aggregated trades (offline or live).
+        trades_path = getattr(args, "eval_trades_jsonl", None)
+        if trades_path is not None and aggregated_trades:
+            try:
+                trades_path = Path(trades_path)
+                trades_path.parent.mkdir(parents=True, exist_ok=True)
+                with trades_path.open("w", encoding="utf-8") as f_trades:
+                    for t in aggregated_trades:
+                        entry_ts_ns = int(t.get("entry_timestamp_ns") or 0)
+                        exit_ts_ns = int(t.get("exit_timestamp_ns") or 0)
+                        entry_time = (
+                            datetime.utcfromtimestamp(entry_ts_ns / 1e9).isoformat()
+                            if entry_ts_ns > 0
+                            else None
+                        )
+                        exit_time = (
+                            datetime.utcfromtimestamp(exit_ts_ns / 1e9).isoformat()
+                            if exit_ts_ns > 0
+                            else None
+                        )
+                        trade_record: Dict[str, Any] = {
+                            "direction": t.get("direction"),
+                            "entry_time": entry_time,
+                            "exit_time": exit_time,
+                            "entry_price": t.get("entry_price"),
+                            "exit_price": t.get("exit_price"),
+                        }
+                        f_trades.write(json.dumps(trade_record) + "\n")
+            except Exception as exc:  # pragma: no cover - log-only
+                logging.warning("Failed to write eval trades JSONL %s: %s", trades_path, exc)
 
 
 def parse_args() -> argparse.Namespace:
@@ -1008,11 +1115,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--eval-log-jsonl",
+        "--eval-trades-jsonl",
         type=Path,
         default=None,
-        help="Optional JSONL path for per-row offline evaluation logs (used with --replay-existing).",
+        help=(
+            "Optional JSONL path where each completed simulated trade is logged during "
+            "offline evaluation (used with --replay-existing)."
+        ),
     )
+    parser.add_argument(
+          "--eval-log-jsonl",
+          type=Path,
+          default=None,
+          help="Optional JSONL path for per-row offline evaluation logs (used with --replay-existing).",
+      )
     parser.add_argument(
         "--eval-summary-json",
         type=Path,

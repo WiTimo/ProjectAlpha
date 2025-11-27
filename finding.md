@@ -1,0 +1,1 @@
+It looks like 0.7 threshold with a 1:1 is quite good
