@@ -11,7 +11,7 @@ data:
   resolutions: ["fast", "mid", "slow"]
   feature_set: "phase5"
   # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
-  limit_files: 35
+  limit_files: 0
   # Clip standardized features to avoid extreme z-scores that can destabilize training.
   standardize_clip: 10.0
   # Splits
@@ -65,7 +65,7 @@ model:
 trade_simulation:
   threshold: 0.90
   threshold_sweep: [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.99]
-  min_trades: 50
+  min_trades: 1
   target_ticks: 40.0
   stop_ticks: 40.0
   tick_size: 0.25

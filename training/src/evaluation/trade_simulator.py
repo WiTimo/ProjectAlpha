@@ -72,18 +72,40 @@ class TradeSimulator:
             abs_idx = self._absolute_index(rec.entry_idx, rec.target_idx)
             events.append((ts, abs_idx, rec, float(prob)))
 
+        # Sort by (timestamp, absolute index) to mirror realtime/offline replay ordering.
         events.sort(key=lambda item: (item[0], item[1]))
 
-        open_until = -1
+        # Simulated trade state, aligned with deployment/offline-eval:
+        # - at most one open trade at a time
+        # - 2 minute cooldown between *entry timestamps* (in nanoseconds)
+        # We approximate "open trade" using cached exit indices and their
+        # timestamps, so that the lifetime matches label generation.
+        current_trade_exit_ts_ns: Optional[int] = None
+        last_entry_timestamp_ns: Optional[int] = None
+        cooldown_ns = int(120 * 60 * 1e9)
+
         wins = losses = 0
         blocked = skipped = 0
         mismatches = 0
         mismatch_examples = 0
         trade_durations: List[int] = []
-        for _, abs_idx, rec, prob in events:
+        for ts_ns, abs_idx, rec, prob in events:
             if prob <= cutoff:
                 continue
-            if abs_idx <= open_until:
+
+            # Enforce one-at-a-time trades and 2 minute cooldown, using
+            # timestamps to mirror deployment/offline-eval semantics.
+            can_open = True
+            # If there is an existing trade whose labeled exit timestamp is
+            # in the future relative to this candidate, we are still "open".
+            if current_trade_exit_ts_ns is not None and ts_ns < current_trade_exit_ts_ns:
+                can_open = False
+            # Additionally, require at least 2 minutes since the last entry.
+            if can_open and ts_ns > 0 and last_entry_timestamp_ns is not None:
+                if ts_ns - last_entry_timestamp_ns < cooldown_ns:
+                    can_open = False
+
+            if not can_open:
                 blocked += 1
                 continue
 
@@ -101,8 +123,16 @@ class TradeSimulator:
                 direction_win = realized_label == predicted_dir
 
             exit_abs_idx = self._absolute_index(rec.entry_idx, exit_idx)
-            open_until = exit_abs_idx
             trade_durations.append(max(exit_abs_idx - abs_idx, 1))
+
+            # Use labeled exit timestamp as the "close" time, and the
+            # current event timestamp as the entry time for cooldown.
+            exit_ts_arr = self._open_timestamps(rec.entry_idx)
+            if 0 <= exit_idx < len(exit_ts_arr):
+                current_trade_exit_ts_ns = int(exit_ts_arr[exit_idx])
+            else:
+                current_trade_exit_ts_ns = ts_ns
+            last_entry_timestamp_ns = ts_ns
 
             if direction_win:
                 wins += 1

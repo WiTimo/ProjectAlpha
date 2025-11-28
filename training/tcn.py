@@ -165,8 +165,18 @@ def main():
     remaining = entries[:-test_days] if test_days > 0 else entries
     val_entries = remaining[-val_days:] if val_days > 0 else []
     train_entries = remaining[:-val_days] if val_days > 0 else remaining
-    
+
+    train_stems = [e.stem for e in train_entries]
+    val_stems = [e.stem for e in val_entries]
+    test_stems = [e.stem for e in test_entries]
+
     logging.info(f"Split: Train={len(train_entries)} Val={len(val_entries)} Test={len(test_entries)}")
+    if train_stems:
+        logging.info("Train stems: %s", ", ".join(train_stems))
+    if val_stems:
+        logging.info("Validation stems (used for TradeSimulator): %s", ", ".join(val_stems))
+    if test_stems:
+        logging.info("Test stems: %s", ", ".join(test_stems))
 
     # 5. Standardize
     stats = compute_stats(train_entries, resolutions, col_map)
@@ -279,6 +289,9 @@ def main():
         "data": {
             "feature_set": feature_set,
             "resolutions": list(resolutions),
+            "train_stems": train_stems,
+            "val_stems": val_stems,
+            "test_stems": test_stems,
         },
         "target": config['training']['target'],
     }

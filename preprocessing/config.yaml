@@ -5,9 +5,9 @@ instrument:
   levels: 5
 
 io:
-  input_path: "../data/raw"
-  feature_output_path: "../data/preprocessed"
-  checkpoint_path: "../data/preprocessed/.checkpoints"
+  input_path: "../data/preprocessing_testing"
+  feature_output_path: "../data/preprocessed_testing_output"
+  checkpoint_path: "../data/preprocessed_preprocessed_testing_output/.checkpoints"
 
 resolutions:
   - resolution: "fast"

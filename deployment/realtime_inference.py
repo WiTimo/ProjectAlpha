@@ -638,6 +638,8 @@ def inference_loop(args: argparse.Namespace) -> None:
 
                 # Actual trade triggering (threshold-based) and optional hotkey emission
                 price_val = float(payload["features"].get(args.entry_price_feature, float("nan")))
+                price_high = float(payload["features"].get("mid_high_price", price_val))
+                price_low = float(payload["features"].get("mid_low_price", price_val))
                 if simulate_trades and trigger_idx is not None:
                     probs_for_trigger = per_target.get(trigger_label or target_columns[0])
 
@@ -690,85 +692,53 @@ def inference_loop(args: argparse.Namespace) -> None:
                             except Exception as exc:  # pragma: no cover - log-only
                                 logging.debug("Failed to write trigger log record: %s", exc)
 
-                        # Up trade trigger
-                        if up_prob_trigger >= args.trade_threshold and price_ok("up"):
-                            log_trigger("up", up_prob_trigger)
+                        # Choose a single trade direction based on the
+                        # maximum directional probability, mirroring the
+                        # training TradeSimulator (max(up_prob, down_prob)).
+                        if up_prob_trigger >= down_prob_trigger:
+                            best_dir = "up"
+                            best_prob = up_prob_trigger
+                        else:
+                            best_dir = "down"
+                            best_prob = down_prob_trigger
+
+                        if best_prob >= args.trade_threshold and price_ok(best_dir):
+                            # Enforce a per-direction cooldown between triggers. In live
+                            # mode we use wall-clock time; in offline replay we use
+                            # data-time (ns) converted to seconds.
+                            if args.replay_existing and current_ts_ns > 0:
+                                last_data = last_trigger_at_data.get(best_dir) or 0
+                                if current_ts_ns - last_data < int(args.trigger_cooldown * 1e9):
+                                    # Still inside cooldown window; skip this trigger.
+                                    continue
+                            else:
+                                now_wall = time.time()
+                                last_wall = last_trigger_at_wall.get(best_dir, 0.0)
+                                if now_wall - last_wall < float(args.trigger_cooldown):
+                                    continue
+
+                            log_trigger(best_dir, best_prob)
+
                             if not paused and enable_triggers and hotkey_emitter:
-                                if hotkey_emitter.press(args.up_hotkey):
+                                hotkey = args.up_hotkey if best_dir == "up" else args.down_hotkey
+                                if hotkey_emitter.press(hotkey):
                                     logging.info(
-                                        "Hotkey %s emitted for %s up=%.3f (>= %.3f) at price=%.2f",
-                                        args.up_hotkey,
+                                        "Hotkey %s emitted for %s %s=%.3f (>= %.3f) at price=%.2f",
+                                        hotkey,
                                         trigger_label or target_columns[0],
-                                        up_prob_trigger,
+                                        best_dir,
+                                        best_prob,
                                         args.trade_threshold,
                                         price_val,
                                     )
                             if args.replay_existing and current_ts_ns > 0:
-                                last_trigger_at_data["up"] = current_ts_ns
+                                last_trigger_at_data[best_dir] = current_ts_ns
                             else:
-                                last_trigger_at_wall["up"] = time.time()
-                            last_entry_price["up"] = (
-                                price_val if np.isfinite(price_val) else last_entry_price["up"]
+                                last_trigger_at_wall[best_dir] = time.time()
+                            last_entry_price[best_dir] = (
+                                price_val if np.isfinite(price_val) else last_entry_price[best_dir]
                             )
-                            eval_stats["hotkey_trades"]["up"] += 1
-
-                            # Simulated trade state: only allow opening a new trade if
-                            # there is no open trade and at least 2 minutes
-                            # have passed since the previous entry.
-                            if np.isfinite(price_val):
-                                can_open = not open_trades
-                                if can_open and current_ts_ns > 0 and last_entry_timestamp_ns is not None:
-                                    if current_ts_ns - last_entry_timestamp_ns < int(120 * 60 * 1e9):
-                                        can_open = False
-                                if can_open:
-                                    trade = {
-                                        "id": next_trade_id,
-                                        "direction": "up",
-                                        "entry_price": price_val,
-                                        "entry_row_index": rows_seen,
-                                        "entry_timestamp_ns": current_ts_ns,
-                                        "threshold": float(args.trade_threshold),
-                                        "resolution": resolution,
-                                        "bar_index": int(payload.get("bar_index", -1)),
-                                    }
-                                    next_trade_id += 1
-                                    open_trades.append(trade)
-                                    last_entry_timestamp_ns = current_ts_ns
-                                    if eval_log_file is not None:
-                                        trade_evt = {
-                                            "event": "trade_open",
-                                            "trade_id": trade["id"],
-                                            "direction": trade["direction"],
-                                            "entry_price": trade["entry_price"],
-                                            "entry_row_index": trade["entry_row_index"],
-                                            "entry_timestamp_ns": trade["entry_timestamp_ns"],
-                                        }
-                                        try:
-                                            eval_log_file.write(json.dumps(trade_evt) + "\n")
-                                        except Exception as exc:  # pragma: no cover - log-only
-                                            logging.debug("Failed to write trade_open event: %s", exc)
-
-                        # Down trade trigger
-                        if down_prob_trigger >= args.trade_threshold and price_ok("down"):
-                            log_trigger("down", down_prob_trigger)
-                            if not paused and enable_triggers and hotkey_emitter:
-                                if hotkey_emitter.press(args.down_hotkey):
-                                    logging.info(
-                                        "Hotkey %s emitted for %s down=%.3f (>= %.3f) at price=%.2f",
-                                        args.down_hotkey,
-                                        trigger_label or target_columns[0],
-                                        down_prob_trigger,
-                                        args.trade_threshold,
-                                        price_val,
-                                    )
-                            if args.replay_existing and current_ts_ns > 0:
-                                last_trigger_at_data["down"] = current_ts_ns
-                            else:
-                                last_trigger_at_wall["down"] = time.time()
-                            last_entry_price["down"] = (
-                                price_val if np.isfinite(price_val) else last_entry_price["down"]
-                            )
-                            eval_stats["hotkey_trades"]["down"] += 1
+                            eval_stats["hotkey_trades"][best_dir] += 1
 
                             # Simulated trade state: one-at-a-time trades with 2 minute cooldown.
                             if np.isfinite(price_val):
@@ -779,7 +749,7 @@ def inference_loop(args: argparse.Namespace) -> None:
                                 if can_open:
                                     trade = {
                                         "id": next_trade_id,
-                                        "direction": "down",
+                                        "direction": best_dir,
                                         "entry_price": price_val,
                                         "entry_row_index": rows_seen,
                                         "entry_timestamp_ns": current_ts_ns,
@@ -804,38 +774,47 @@ def inference_loop(args: argparse.Namespace) -> None:
                                         except Exception as exc:  # pragma: no cover - log-only
                                             logging.debug("Failed to write trade_open event: %s", exc)
 
-                # Update any open trades with the latest price
-                if open_trades and np.isfinite(price_val):
+                # Update any open trades with the latest price. For offline evaluation,
+                # we respect intra-bar movement using high/low and clamp the realized
+                # move to +/- TP/SL, matching price-based TP/SL semantics instead of
+                # bar-close overshoots.
+                if open_trades and (np.isfinite(price_val) or np.isfinite(price_high) or np.isfinite(price_low)):
                     tp = float(getattr(args, "eval_take_profit", 10.0))
                     sl = float(getattr(args, "eval_stop_loss", 10.0))
                     tp = tp if tp > 0 else 10.0
                     sl = sl if sl > 0 else 10.0
                     for trade in list(open_trades):
-                        move = price_val - trade["entry_price"]
+                        entry_price = float(trade["entry_price"])
                         result: Optional[str] = None
+                        exit_price: Optional[float] = None
+
                         if trade["direction"] == "up":
-                            if move >= tp:
+                            # Win if intra-bar high reaches entry + tp; loss if low
+                            # reaches entry - sl first. We approximate using the
+                            # current bar's extremes.
+                            if np.isfinite(price_high) and price_high - entry_price >= tp:
                                 result = "win"
-                            elif move <= -sl:
+                                exit_price = entry_price + tp
+                            elif np.isfinite(price_low) and price_low - entry_price <= -sl:
                                 result = "loss"
+                                exit_price = entry_price - sl
                         else:
-                            # down trade: profit when price moves down
-                            if -move >= tp:
+                            # Down trade: profit when price moves down.
+                            if np.isfinite(price_low) and entry_price - price_low >= tp:
                                 result = "win"
-                            elif -move <= -sl:
+                                exit_price = entry_price - tp
+                            elif np.isfinite(price_high) and entry_price - price_high <= -sl:
                                 result = "loss"
-                        if result is None:
+                                exit_price = entry_price + sl
+
+                        if result is None or exit_price is None:
                             continue
 
-                        trade["exit_price"] = price_val
+                        trade["exit_price"] = exit_price
                         trade["exit_row_index"] = rows_seen
                         trade["exit_timestamp_ns"] = end_ns or start_ns
                         trade["result"] = result
-                        trade["pips_move"] = (
-                            price_val - trade["entry_price"]
-                            if trade["direction"] == "up"
-                            else trade["entry_price"] - price_val
-                        )
+                        trade["pips_move"] = tp if result == "win" else -sl
                         trade["duration_rows"] = trade["exit_row_index"] - trade["entry_row_index"]
                         completed_trades.append(trade)
                         open_trades.remove(trade)
