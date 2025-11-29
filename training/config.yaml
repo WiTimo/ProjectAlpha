@@ -9,7 +9,7 @@ paths:
 
 data:
   resolutions: ["fast", "mid", "slow"]
-  feature_set: "phase5"
+  feature_set: "phase7"
   # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
   limit_files: 0
   # Clip standardized features to avoid extreme z-scores that can destabilize training.

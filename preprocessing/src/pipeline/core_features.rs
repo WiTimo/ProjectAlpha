@@ -18,6 +18,7 @@ use crate::utils::math::signed_log1p;
 use time::OffsetDateTime;
 
 const DEFAULT_RV_WINDOW: usize = 10;
+const LONG_RV_WINDOW_MULTIPLIER: usize = 5;
 const LEVEL_FEATURE_COUNT: usize = 3;
 const MAX_LEVEL_OFFSET_TICKS: f64 = 256.0;
 const RV_MIN_OBSERVATIONS: usize = 2;
@@ -33,13 +34,21 @@ const VOLUME_LOW_REL: f64 = 0.5;
 const VOLUME_HIGH_REL: f64 = 1.5;
 const SPEED_LOW_TPS: f64 = 0.5;
 const SPEED_HIGH_TPS: f64 = 1.5;
+const REGIME_WINDOW: usize = 60;
+const REGIME_MIN_OBSERVATIONS: usize = 2;
+const MAX_Z_SCORE: f64 = 8.0;
 
 pub struct CoreFeatureExtractor {
     tick_size: f64,
     epsilon: f64,
     scaler: CausalScaler,
     rv: RollingVariance,
+    rv_long: RollingVariance,
     rv_min_window: usize,
+    rv_long_min_window: usize,
+    z_volume_stats: RollingMeanStd,
+    z_spread_stats: RollingMeanStd,
+    z_volatility_stats: RollingMeanStd,
 }
 
 impl CoreFeatureExtractor {
@@ -65,12 +74,19 @@ impl CoreFeatureExtractor {
         rv_window: usize,
         scaler_state: Option<&CausalScalerState>,
     ) -> Self {
+        let short_window = rv_window.max(1);
+        let long_window = (rv_window.saturating_mul(LONG_RV_WINDOW_MULTIPLIER)).max(short_window);
         let extractor = Self {
             tick_size: tick_size.max(1e-12),
             epsilon: norm_cfg.log_epsilon.max(1e-12),
             scaler: CausalScaler::with_state(norm_cfg, scaler_state),
-            rv: RollingVariance::new(rv_window.max(1)),
+            rv: RollingVariance::new(short_window),
+            rv_long: RollingVariance::new(long_window),
             rv_min_window: RV_MIN_OBSERVATIONS,
+            rv_long_min_window: RV_MIN_OBSERVATIONS,
+            z_volume_stats: RollingMeanStd::new(REGIME_WINDOW),
+            z_spread_stats: RollingMeanStd::new(REGIME_WINDOW),
+            z_volatility_stats: RollingMeanStd::new(REGIME_WINDOW),
         };
         extractor
     }
@@ -80,25 +96,9 @@ impl CoreFeatureExtractor {
     }
 
     pub fn compute(&mut self, bars: &[Bar]) -> Vec<CoreFeatureRow> {
-        let mut rows: Vec<CoreFeatureRow> = bars
-            .iter()
+        bars.iter()
             .filter_map(|bar| self.compute_row(bar))
-            .collect();
-        if rows.is_empty() {
-            return rows;
-        }
-
-        assign_percentile_regime(
-            &mut rows,
-            |row| row.spread_ticks,
-            |row, regime| row.spread_regime = regime,
-        );
-        assign_percentile_regime(
-            &mut rows,
-            |row| row.rv_log,
-            |row, regime| row.volatility_regime = regime,
-        );
-        rows
+            .collect()
     }
 
     fn compute_row(&mut self, bar: &Bar) -> Option<CoreFeatureRow> {
@@ -125,7 +125,6 @@ impl CoreFeatureExtractor {
         let trade_volume_sum_rel = clamp_trade_volume(volume_scaled.relative);
         let trade_count_log = (bar.trade_count as f64).ln_1p();
         let duration_secs = bar.duration().as_seconds_f64().max(1e-6);
-        let speed_tps = bar.trade_count as f64 / duration_secs;
         let volume_divisor = volume_scaled.divisor.abs() + self.epsilon;
         let buy_trade_volume_rel = if volume_divisor > 0.0 {
             bar.buy_trade_volume / volume_divisor
@@ -164,6 +163,40 @@ impl CoreFeatureExtractor {
             0.0
         };
         let rv_log = (rv_var + self.epsilon).ln();
+        let vol_est = rv_var.sqrt();
+
+        let rv_long_sum = self.rv_long.push(mid_return);
+        let rv_long_count = self.rv_long.count();
+        let rv_long_var = if rv_long_count >= self.rv_long_min_window {
+            (rv_long_sum / rv_long_count as f64).max(0.0)
+        } else {
+            0.0
+        };
+        let rv_long_log = (rv_long_var + self.epsilon).ln();
+
+        let z_volume =
+            self.z_volume_stats
+                .zscore_and_observe(bar.trade_volume_sum, self.epsilon, REGIME_MIN_OBSERVATIONS);
+        let z_spread = self
+            .z_spread_stats
+            .zscore_and_observe(spread_close, self.epsilon, REGIME_MIN_OBSERVATIONS);
+        let z_volatility = self
+            .z_volatility_stats
+            .zscore_and_observe(vol_est, self.epsilon, REGIME_MIN_OBSERVATIONS);
+
+        let has_volume = bar.trade_volume_sum > self.epsilon && bar.trade_count > 0;
+        let (kyle_lambda_log, amihud_log) = if has_volume {
+            let trade_imbalance_volume = bar.buy_trade_volume - bar.sell_trade_volume;
+            let kyle_lambda_like =
+                mid_return.abs() / (trade_imbalance_volume.abs() + self.epsilon);
+            let amihud_like = mid_return.abs() / (bar.trade_volume_sum.abs() + self.epsilon);
+            (
+                kyle_lambda_like.ln_1p(),
+                amihud_like.ln_1p(),
+            )
+        } else {
+            (0.0, 0.0)
+        };
 
         let cum_bid = bar.book.cumulative_bid_size();
         let cum_ask = bar.book.cumulative_ask_size();
@@ -211,12 +244,11 @@ impl CoreFeatureExtractor {
         let ofi_net = bar.ofi_bid + bar.ofi_ask;
         let ofi_net_rel = ofi_net / avg_depth;
         let ofi_net_log = signed_log1p(ofi_net_rel);
-        let total_depth_rel = cum_bid_scaled.relative + cum_ask_scaled.relative;
         let spread_regime = 0.0;
-        let depth_regime = encode_regime(total_depth_rel, DEPTH_LOW_REL, DEPTH_HIGH_REL);
-        let volume_regime = encode_regime(trade_volume_sum_rel, VOLUME_LOW_REL, VOLUME_HIGH_REL);
+        let depth_regime = 0.0;
+        let volume_regime = 0.0;
         let volatility_regime = 0.0;
-        let speed_regime = encode_regime(speed_tps, SPEED_LOW_TPS, SPEED_HIGH_TPS);
+        let speed_regime = 0.0;
         let (tod_sin, tod_cos, is_us_session) = compute_tod_features(&bar.start);
 
         Some(CoreFeatureRow {
@@ -244,6 +276,12 @@ impl CoreFeatureExtractor {
             avg_buy_dist_to_ask,
             avg_sell_dist_to_bid,
             rv_log,
+            rv_long_log,
+            kyle_lambda_log,
+            amihud_log,
+            z_volume,
+            z_spread,
+            z_volatility,
             tod_sin,
             tod_cos,
             is_us_session,
@@ -296,6 +334,12 @@ pub struct CoreFeatureRow {
     pub avg_buy_dist_to_ask: f64,
     pub avg_sell_dist_to_bid: f64,
     pub rv_log: f64,
+    pub rv_long_log: f64,
+    pub kyle_lambda_log: f64,
+    pub amihud_log: f64,
+    pub z_volume: f64,
+    pub z_spread: f64,
+    pub z_volatility: f64,
     pub tod_sin: f64,
     pub tod_cos: f64,
     pub is_us_session: f64,
@@ -481,6 +525,37 @@ where
     });
 }
 
+pub fn apply_regimes(rows: &mut [CoreFeatureRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    assign_percentile_regime(
+        rows,
+        |row| row.spread_ticks,
+        |row, regime| row.spread_regime = regime,
+    );
+    assign_percentile_regime(
+        rows,
+        |row| row.rv_log,
+        |row, regime| row.volatility_regime = regime,
+    );
+    assign_percentile_regime(
+        rows,
+        |row| row.cum_bid_size_l_rel + row.cum_ask_size_l_rel,
+        |row, regime| row.depth_regime = regime,
+    );
+    assign_percentile_regime(
+        rows,
+        |row| row.trade_volume_sum_rel,
+        |row, regime| row.volume_regime = regime,
+    );
+    assign_percentile_regime(
+        rows,
+        |row| row.trade_count_log,
+        |row, regime| row.speed_regime = regime,
+    );
+}
+
 fn percentile(sorted: &[f64], pct: f64) -> f64 {
     if sorted.is_empty() {
         return f64::NAN;
@@ -512,8 +587,10 @@ pub fn write_core_features_parquet(path: &Path, rows: &[CoreFeatureRow]) -> Resu
     if rows.is_empty() {
         return Ok(());
     }
+    let mut rows_owned: Vec<CoreFeatureRow> = rows.to_vec();
+    apply_regimes(&mut rows_owned);
     let mut writer = CoreFeatureWriter::create_file(path, rows.len())?;
-    writer.append_rows(rows.iter().cloned())?;
+    writer.append_rows(rows_owned.into_iter())?;
     writer.finish()
 }
 
@@ -613,6 +690,12 @@ fn build_core_feature_fields() -> Vec<Field> {
         Field::new("avg_buy_dist_to_ask", DataType::Float64, false),
         Field::new("avg_sell_dist_to_bid", DataType::Float64, false),
         Field::new("rv_log", DataType::Float64, false),
+        Field::new("rv_long_log", DataType::Float64, false),
+        Field::new("kyle_lambda_log", DataType::Float64, false),
+        Field::new("amihud_log", DataType::Float64, false),
+        Field::new("z_volume", DataType::Float64, false),
+        Field::new("z_spread", DataType::Float64, false),
+        Field::new("z_volatility", DataType::Float64, false),
         Field::new("tod_sin", DataType::Float64, false),
         Field::new("tod_cos", DataType::Float64, false),
         Field::new("is_us_session", DataType::Float64, false),
@@ -712,6 +795,13 @@ fn build_columns(rows: &[CoreFeatureRow]) -> Vec<ArrayRef> {
     let avg_sell_dist_to_bid =
         Float64Array::from_iter_values(rows.iter().map(|r| r.avg_sell_dist_to_bid));
     let rv_log = Float64Array::from_iter_values(rows.iter().map(|r| r.rv_log));
+    let rv_long_log = Float64Array::from_iter_values(rows.iter().map(|r| r.rv_long_log));
+    let kyle_lambda_log =
+        Float64Array::from_iter_values(rows.iter().map(|r| r.kyle_lambda_log));
+    let amihud_log = Float64Array::from_iter_values(rows.iter().map(|r| r.amihud_log));
+    let z_volume = Float64Array::from_iter_values(rows.iter().map(|r| r.z_volume));
+    let z_spread = Float64Array::from_iter_values(rows.iter().map(|r| r.z_spread));
+    let z_volatility = Float64Array::from_iter_values(rows.iter().map(|r| r.z_volatility));
     let tod_sin = Float64Array::from_iter_values(rows.iter().map(|r| r.tod_sin));
     let tod_cos = Float64Array::from_iter_values(rows.iter().map(|r| r.tod_cos));
     let is_us_session = Float64Array::from_iter_values(rows.iter().map(|r| r.is_us_session));
@@ -760,6 +850,12 @@ fn build_columns(rows: &[CoreFeatureRow]) -> Vec<ArrayRef> {
         Arc::new(avg_buy_dist_to_ask),
         Arc::new(avg_sell_dist_to_bid),
         Arc::new(rv_log),
+        Arc::new(rv_long_log),
+        Arc::new(kyle_lambda_log),
+        Arc::new(amihud_log),
+        Arc::new(z_volume),
+        Arc::new(z_spread),
+        Arc::new(z_volatility),
         Arc::new(tod_sin),
         Arc::new(tod_cos),
         Arc::new(is_us_session),
@@ -855,6 +951,72 @@ impl RollingVariance {
 
     fn count(&self) -> usize {
         self.buffer.len()
+    }
+}
+
+struct RollingMeanStd {
+    window: usize,
+    buffer: std::collections::VecDeque<f64>,
+    sum: f64,
+    sum_sq: f64,
+}
+
+impl RollingMeanStd {
+    fn new(window: usize) -> Self {
+        Self {
+            window: window.max(1),
+            buffer: std::collections::VecDeque::with_capacity(window.max(1)),
+            sum: 0.0,
+            sum_sq: 0.0,
+        }
+    }
+
+    fn stats(&self) -> Option<(f64, f64, usize)> {
+        let n = self.buffer.len();
+        if n == 0 {
+            return None;
+        }
+        let n_f = n as f64;
+        let mean = self.sum / n_f;
+        let var = (self.sum_sq / n_f) - mean * mean;
+        let std = if var > 0.0 { var.sqrt() } else { 0.0 };
+        Some((mean, std, n))
+    }
+
+    fn observe(&mut self, value: f64) {
+        let v = value;
+        self.buffer.push_back(v);
+        self.sum += v;
+        self.sum_sq += v * v;
+        if self.buffer.len() > self.window {
+            if let Some(front) = self.buffer.pop_front() {
+                self.sum -= front;
+                self.sum_sq -= front * front;
+            }
+        }
+    }
+
+    fn zscore_and_observe(&mut self, value: f64, epsilon: f64, min_count: usize) -> f64 {
+        let (mean, std, count) = match self.stats() {
+            Some(stats) => stats,
+            None => {
+                self.observe(value);
+                return 0.0;
+            }
+        };
+        self.observe(value);
+        if count < min_count || !std.is_finite() {
+            0.0
+        } else {
+            let denom = std.max(epsilon);
+            let mut z = (value - mean) / denom;
+            if z > MAX_Z_SCORE {
+                z = MAX_Z_SCORE;
+            } else if z < -MAX_Z_SCORE {
+                z = -MAX_Z_SCORE;
+            }
+            z
+        }
     }
 }
 
@@ -1047,7 +1209,7 @@ mod tests {
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let batch = reader.next().expect("batch")?;
         assert_eq!(batch.num_rows(), 1);
-        let expected_columns = 40 + (6 * LEVEL_FEATURE_COUNT);
+        let expected_columns = 46 + (6 * LEVEL_FEATURE_COUNT);
         assert_eq!(batch.num_columns(), expected_columns);
         Ok(())
     }

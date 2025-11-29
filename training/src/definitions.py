@@ -48,6 +48,20 @@ AGGRESSOR_COLUMNS = [
     "has_sell_trade",
 ]
 
+ADV_VOL_IMPACT_COLUMNS = [
+    "rv_long_log",
+    "kyle_lambda_log",
+    "amihud_log",
+]
+
+TIME_REGIME_COLUMNS = [
+    "tod_sin",
+    "tod_cos",
+    "z_volume",
+    "z_spread",
+    "z_volatility",
+]
+
 PRESENCE_COLUMNS = [
     "bid_level_2_present",
     "bid_level_3_present",
@@ -64,10 +78,14 @@ PHASE4_FEATURE_COLUMNS = (
 )
 
 PHASE5_FEATURE_COLUMNS = PHASE4_FEATURE_COLUMNS + OFI_COLUMNS + AGGRESSOR_COLUMNS
+PHASE6_FEATURE_COLUMNS = PHASE5_FEATURE_COLUMNS + ADV_VOL_IMPACT_COLUMNS
+PHASE7_FEATURE_COLUMNS = PHASE6_FEATURE_COLUMNS + TIME_REGIME_COLUMNS
 
 FEATURE_SET_COLUMNS = {
     "phase4": PHASE4_FEATURE_COLUMNS,
     "phase5": PHASE5_FEATURE_COLUMNS,
+    "phase6": PHASE6_FEATURE_COLUMNS,
+    "phase7": PHASE7_FEATURE_COLUMNS,
 }
 
 PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]

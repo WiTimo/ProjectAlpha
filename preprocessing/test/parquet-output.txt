@@ -1,6 +1,6 @@
 === BASIC DATASET INFO ===
 Rows:    61,434
-Columns: 58
+Columns: 64
 
 === COLUMN OVERVIEW ===
 Name                           Dtype                  Nulls    Null%       Unique
@@ -28,13 +28,19 @@ has_sell_trade                 float64                    0    0.00%            
 avg_buy_dist_to_ask            float64                    0    0.00%        1,247
 avg_sell_dist_to_bid           float64                    0    0.00%        1,263
 rv_log                         float64                    0    0.00%       54,545
+rv_long_log                    float64                    0    0.00%       55,368
+kyle_lambda_log                float64                    0    0.00%       25,222
+amihud_log                     float64                    0    0.00%       26,822
+z_volume                       float64                    0    0.00%       56,279
+z_spread                       float64                    0    0.00%       60,193
+z_volatility                   float64                    0    0.00%       61,385
 tod_sin                        float64                    0    0.00%       31,059
 tod_cos                        float64                    0    0.00%       31,199
 is_us_session                  float64                    0    0.00%            2
-spread_regime                  float64                    0    0.00%            1
+spread_regime                  float64                    0    0.00%            3
 depth_regime                   float64                    0    0.00%            3
 volume_regime                  float64                    0    0.00%            3
-volatility_regime              float64                    0    0.00%            1
+volatility_regime              float64                    0    0.00%            3
 speed_regime                   float64                    0    0.00%            3
 limit_add_bid_volume_rel       float64                    0    0.00%       57,225
 limit_add_ask_volume_rel       float64                    0    0.00%       38,712
@@ -503,6 +509,114 @@ Unique non-null values: 54,545
    99 :          -18.7785
    max:          -17.1517
 
+--- Column: rv_long_log ---
+Dtype: float64
+Total rows: 61,434
+Nulls: 0 (0.00%)
+Unique non-null values: 55,368
+  Non-null count: 61,434.0
+  Mean:          -20.5088
+  Std dev:       0.554141
+   min:          -27.631
+   1  :          -22.2534
+   5  :          -21.4447
+   25 :          -20.7671
+   50 :          -20.4661
+   75 :          -20.2033
+   95 :          -19.6341
+   99 :          -19.1919
+   max:          -18.4674
+
+--- Column: kyle_lambda_log ---
+Dtype: float64
+Total rows: 61,434
+Nulls: 0 (0.00%)
+Unique non-null values: 25,222
+  Non-null count: 61,434.0
+  Mean:          1.39614
+  Std dev:       4.5071
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          7.99995e-07
+   50 :          2.13334e-06
+   75 :          5.20579e-06
+   95 :          15.6696
+   99 :          16.3667
+   max:          19.676
+
+--- Column: amihud_log ---
+Dtype: float64
+Total rows: 61,434
+Nulls: 0 (0.00%)
+Unique non-null values: 26,822
+  Non-null count: 61,434.0
+  Mean:          1.44409e-06
+  Std dev:       1.96037e-06
+   min:          0
+   1  :          0
+   5  :          0
+   25 :          2.66128e-07
+   50 :          1.06398e-06
+   75 :          2.13382e-06
+   95 :          4.36882e-06
+   99 :          8.74675e-06
+   max:          7.87435e-05
+
+--- Column: z_volume ---
+Dtype: float64
+Total rows: 61,434
+Nulls: 0 (0.00%)
+Unique non-null values: 56,279
+  Non-null count: 61,434.0
+  Mean:          0.0134328
+  Std dev:       1.08165
+   min:          -5.18988
+   1  :          -1.53089
+   5  :          -1.11074
+   25 :          -0.751874
+   50 :          -0.257301
+   75 :          0.510637
+   95 :          2.00996
+   99 :          3.60753
+   max:          8
+
+--- Column: z_spread ---
+Dtype: float64
+Total rows: 61,434
+Nulls: 0 (0.00%)
+Unique non-null values: 60,193
+  Non-null count: 61,434.0
+  Mean:          -0.0081547
+  Std dev:       1.05188
+   min:          -8
+   1  :          -2.07449
+   5  :          -1.62833
+   25 :          -0.818422
+   50 :          -0.0356765
+   75 :          0.769297
+   95 :          1.71876
+   99 :          2.3177
+   max:          8
+
+--- Column: z_volatility ---
+Dtype: float64
+Total rows: 61,434
+Nulls: 0 (0.00%)
+Unique non-null values: 61,385
+  Non-null count: 61,434.0
+  Mean:          0.010356
+  Std dev:       1.18189
+   min:          -6.75503
+   1  :          -2.80905
+   5  :          -1.83602
+   25 :          -0.782389
+   50 :          -0.00682453
+   75 :          0.795443
+   95 :          1.86761
+   99 :          2.80466
+   max:          8
+
 --- Column: tod_sin ---
 Dtype: float64
 Total rows: 61,434
@@ -564,21 +678,23 @@ Unique non-null values: 2
 Dtype: float64
 Total rows: 61,434
 Nulls: 0 (0.00%)
-Unique non-null values: 1
+Unique non-null values: 3
   Value distribution (including NaN):
-    0.0: 61,434 (100.00%)
+    0.0: 21,206 (34.52%)
+    -1.0: 20,162 (32.82%)
+    1.0: 20,066 (32.66%)
   Non-null count: 61,434.0
-  Mean:          0
-  Std dev:       0
-   min:          0
-   1  :          0
-   5  :          0
-   25 :          0
+  Mean:          -0.00156265
+  Std dev:       0.809212
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -1
    50 :          0
-   75 :          0
-   95 :          0
-   99 :          0
-   max:          0
+   75 :          1
+   95 :          1
+   99 :          1
+   max:          1
 
 --- Column: depth_regime ---
 Dtype: float64
@@ -586,19 +702,19 @@ Total rows: 61,434
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    0.0: 58,306 (94.91%)
-    1.0: 2,305 (3.75%)
-    -1.0: 823 (1.34%)
+    1.0: 20,887 (34.00%)
+    0.0: 20,274 (33.00%)
+    -1.0: 20,273 (33.00%)
   Non-null count: 61,434.0
-  Mean:          0.0241234
-  Std dev:       0.224355
+  Mean:          0.00999447
+  Std dev:       0.818473
    min:          -1
    1  :          -1
-   5  :          0
-   25 :          0
+   5  :          -1
+   25 :          -1
    50 :          0
-   75 :          0
-   95 :          0
+   75 :          1
+   95 :          1
    99 :          1
    max:          1
 
@@ -608,18 +724,18 @@ Total rows: 61,434
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    0.0: 35,359 (57.56%)
-    -1.0: 14,352 (23.36%)
-    1.0: 11,723 (19.08%)
+    1.0: 20,887 (34.00%)
+    0.0: 20,274 (33.00%)
+    -1.0: 20,273 (33.00%)
   Non-null count: 61,434.0
-  Mean:          -0.0427939
-  Std dev:       0.650088
+  Mean:          0.00999447
+  Std dev:       0.818473
    min:          -1
    1  :          -1
    5  :          -1
-   25 :          0
+   25 :          -1
    50 :          0
-   75 :          0
+   75 :          1
    95 :          1
    99 :          1
    max:          1
@@ -628,21 +744,23 @@ Unique non-null values: 3
 Dtype: float64
 Total rows: 61,434
 Nulls: 0 (0.00%)
-Unique non-null values: 1
+Unique non-null values: 3
   Value distribution (including NaN):
-    0.0: 61,434 (100.00%)
+    1.0: 20,887 (34.00%)
+    0.0: 20,274 (33.00%)
+    -1.0: 20,273 (33.00%)
   Non-null count: 61,434.0
-  Mean:          0
-  Std dev:       0
-   min:          0
-   1  :          0
-   5  :          0
-   25 :          0
+  Mean:          0.00999447
+  Std dev:       0.818473
+   min:          -1
+   1  :          -1
+   5  :          -1
+   25 :          -1
    50 :          0
-   75 :          0
-   95 :          0
-   99 :          0
-   max:          0
+   75 :          1
+   95 :          1
+   99 :          1
+   max:          1
 
 --- Column: speed_regime ---
 Dtype: float64
@@ -650,17 +768,17 @@ Total rows: 61,434
 Nulls: 0 (0.00%)
 Unique non-null values: 3
   Value distribution (including NaN):
-    1.0: 56,957 (92.71%)
-    -1.0: 2,549 (4.15%)
-    0.0: 1,928 (3.14%)
+    0.0: 39,340 (64.04%)
+    1.0: 17,617 (28.68%)
+    -1.0: 4,477 (7.29%)
   Non-null count: 61,434.0
-  Mean:          0.885633
-  Std dev:       0.429271
+  Mean:          0.213888
+  Std dev:       0.560263
    min:          -1
    1  :          -1
-   5  :          0
-   25 :          1
-   50 :          1
+   5  :          -1
+   25 :          0
+   50 :          0
    75 :          1
    95 :          1
    99 :          1

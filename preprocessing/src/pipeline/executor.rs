@@ -16,7 +16,7 @@ use crate::io::{EventReader, FileEventReader};
 use crate::normalization::CausalScalerState;
 
 use super::context::PipelineContext;
-use super::core_features::{CoreFeatureRow, CoreFeatureWriter, DEFAULT_FEATURE_FLUSH_ROWS};
+use super::core_features::{apply_regimes, CoreFeatureRow, CoreFeatureWriter, DEFAULT_FEATURE_FLUSH_ROWS};
 use super::labeling::{LabelingEngine, MidPriceAnchor, TimeSplitAssigner};
 use super::streaming::StreamingFeatureEngine;
 
@@ -249,6 +249,7 @@ struct ResolutionStream {
     rows_emitted: usize,
     dry_run: bool,
     state_writer: Option<NormalizationStateWriter>,
+    buffer: Vec<CoreFeatureRow>,
 }
 
 struct NormalizationStateWriter {
@@ -296,6 +297,7 @@ impl ResolutionStream {
             rows_emitted: 0,
             dry_run: config.dry_run,
             state_writer,
+            buffer: Vec::new(),
         })
     }
 
@@ -307,7 +309,12 @@ impl ResolutionStream {
     fn finish(mut self) -> Result<FeatureSummary> {
         let rows = self.engine.finish();
         self.consume_rows(rows)?;
-        if let Some(writer) = self.writer.take() {
+        if let Some(mut writer) = self.writer.take() {
+            if !self.buffer.is_empty() {
+                let mut rows = std::mem::take(&mut self.buffer);
+                apply_regimes(&mut rows);
+                writer.append_rows(rows.into_iter())?;
+            }
             writer.finish()?;
         }
         if let Some(state_writer) = &self.state_writer {
@@ -331,9 +338,7 @@ impl ResolutionStream {
             return Ok(());
         }
         self.rows_emitted += rows.len();
-        if let Some(writer) = self.writer.as_mut() {
-            writer.append_rows(rows.into_iter())?;
-        }
+        self.buffer.extend(rows);
         Ok(())
     }
 }

@@ -308,6 +308,15 @@ fn build_feature_map(row: &CoreFeatureRow) -> BTreeMap<String, f64> {
     map.insert("avg_buy_dist_to_ask".into(), row.avg_buy_dist_to_ask);
     map.insert("avg_sell_dist_to_bid".into(), row.avg_sell_dist_to_bid);
     map.insert("rv_log".into(), row.rv_log);
+    map.insert("rv_long_log".into(), row.rv_long_log);
+    map.insert("kyle_lambda_log".into(), row.kyle_lambda_log);
+    map.insert("amihud_log".into(), row.amihud_log);
+    map.insert("z_volume".into(), row.z_volume);
+    map.insert("z_spread".into(), row.z_spread);
+    map.insert("z_volatility".into(), row.z_volatility);
+    map.insert("rv_long_log".into(), row.rv_long_log);
+    map.insert("kyle_lambda_log".into(), row.kyle_lambda_log);
+    map.insert("amihud_log".into(), row.amihud_log);
     map.insert("tod_sin".into(), row.tod_sin);
     map.insert("tod_cos".into(), row.tod_cos);
     map.insert("is_us_session".into(), row.is_us_session);
