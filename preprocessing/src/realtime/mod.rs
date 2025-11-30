@@ -67,6 +67,12 @@ pub struct RealtimePreprocessor {
     base_bar_count: usize,
     session_reset_gap_ns: i128,
     last_base_end_ns: Option<i64>,
+    // Cross-resolution aggregate tracking
+    fast_bars_buffer: VecDeque<CoreFeatureRow>,
+    mid_bars_buffer: VecDeque<CoreFeatureRow>,
+    tick_size: f64,
+    has_mid: bool,
+    has_slow: bool,
 }
 
 impl RealtimePreprocessor {
@@ -101,6 +107,9 @@ impl RealtimePreprocessor {
         } else {
             Vec::new()
         };
+        let has_mid = extra_resolutions.contains(&Resolution::Mid);
+        let has_slow = extra_resolutions.contains(&Resolution::Slow);
+        
         Self {
             quote_state: QuoteState::new(max_levels),
             pending_events: VecDeque::new(),
@@ -113,6 +122,11 @@ impl RealtimePreprocessor {
             base_bar_count: 0,
             session_reset_gap_ns: cfg.session_reset_gap_ns,
             last_base_end_ns: None,
+            fast_bars_buffer: VecDeque::new(),
+            mid_bars_buffer: VecDeque::new(),
+            tick_size: cfg.tick_size,
+            has_mid,
+            has_slow,
         }
     }
 
@@ -205,12 +219,28 @@ impl RealtimePreprocessor {
                     let rows = engine.ingest_event(&event);
                     for row in rows {
                         if resolution == self.base_resolution {
+                            // Store fast bars for cross-resolution aggregation
+                            if self.has_mid || self.has_slow {
+                                self.fast_bars_buffer.push_back(row.clone());
+                                // Keep only last 100 fast bars (~100 seconds)
+                                if self.fast_bars_buffer.len() > 100 {
+                                    self.fast_bars_buffer.pop_front();
+                                }
+                            }
                             if let Some(payload) = self.build_payload(row) {
                                 payloads.push(payload);
                             }
                         } else {
                             let aliased = build_feature_map_with_suffix(&row, resolution);
                             self.extra_feature_cache.insert(resolution, aliased);
+                            // Store mid/slow bars for cross-resolution aggregation
+                            if resolution == Resolution::Mid {
+                                self.mid_bars_buffer.push_back(row.clone());
+                                // Keep only last 20 mid bars (~200 seconds)
+                                if self.mid_bars_buffer.len() > 20 {
+                                    self.mid_bars_buffer.pop_front();
+                                }
+                            }
                         }
                     }
                 }
@@ -248,7 +278,91 @@ impl RealtimePreprocessor {
                 features.extend(extra.iter().map(|(k, v)| (k.clone(), *v)));
             }
         }
+        
+        // Compute cross-resolution aggregates
+        let cross_res = self.compute_cross_resolution_aggregates(&row);
+        features.extend(cross_res);
+        
         Some(RealtimeFeaturePayload::from_row_with_features(row, features))
+    }
+    
+    fn compute_cross_resolution_aggregates(&self, fast_row: &CoreFeatureRow) -> BTreeMap<String, f64> {
+        let mut result = BTreeMap::new();
+        
+        // Initialize all features to 0.0
+        result.insert("avg_fast_spread_abs".to_string(), 0.0);
+        result.insert("sum_fast_trade_volume".to_string(), 0.0);
+        result.insert("sum_fast_ofi_net".to_string(), 0.0);
+        result.insert("avg_mid_spread_abs".to_string(), 0.0);
+        result.insert("sum_mid_trade_volume".to_string(), 0.0);
+        result.insert("sum_mid_ofi_net".to_string(), 0.0);
+        
+        if !self.has_mid && !self.has_slow {
+            return result;
+        }
+        
+        let fast_ts = fast_row.start_ns;
+        
+        // H1: Aggregate fast bars into mid bars
+        if self.has_mid {
+            // Find the mid bar that contains this fast bar
+            if let Some(mid_row) = self.mid_bars_buffer.iter()
+                .rfind(|m| m.start_ns <= fast_ts && fast_ts < m.end_ns) 
+            {
+                // Find all fast bars within this mid bar's time range
+                let fast_bars_in_mid: Vec<_> = self.fast_bars_buffer.iter()
+                    .filter(|f| f.start_ns >= mid_row.start_ns && f.start_ns < mid_row.end_ns)
+                    .collect();
+                
+                if !fast_bars_in_mid.is_empty() {
+                    let sum_spread: f64 = fast_bars_in_mid.iter()
+                        .map(|f| f.spread_ticks * self.tick_size)
+                        .sum();
+                    let sum_volume: f64 = fast_bars_in_mid.iter()
+                        .map(|f| f.trade_volume_sum_rel)
+                        .sum();
+                    let sum_ofi: f64 = fast_bars_in_mid.iter()
+                        .map(|f| f.ofi_net_log)
+                        .sum();
+                    
+                    result.insert("avg_fast_spread_abs".to_string(), sum_spread / fast_bars_in_mid.len() as f64);
+                    result.insert("sum_fast_trade_volume".to_string(), sum_volume);
+                    result.insert("sum_fast_ofi_net".to_string(), sum_ofi);
+                }
+            }
+        }
+        
+        // H2: Aggregate mid bars into slow bars (if slow resolution is present)
+        if self.has_slow {
+            // Find the slow bar that contains this fast bar's mid bar
+            if let Some(slow_cache) = self.extra_feature_cache.get(&Resolution::Slow) {
+                // The slow bar's timestamp is embedded in the cached features
+                // We need to find which mid bars belong to the current slow bar
+                // For now, aggregate the most recent mid bars (approximation)
+                let mid_bars_in_slow: Vec<_> = self.mid_bars_buffer.iter()
+                    .rev()
+                    .take(6) // Approximate: last 6 mid bars = ~60 seconds
+                    .collect();
+                
+                if !mid_bars_in_slow.is_empty() {
+                    let sum_spread: f64 = mid_bars_in_slow.iter()
+                        .map(|m| m.spread_ticks * self.tick_size)
+                        .sum();
+                    let sum_volume: f64 = mid_bars_in_slow.iter()
+                        .map(|m| m.trade_volume_sum_rel)
+                        .sum();
+                    let sum_ofi: f64 = mid_bars_in_slow.iter()
+                        .map(|m| m.ofi_net_log)
+                        .sum();
+                    
+                    result.insert("avg_mid_spread_abs".to_string(), sum_spread / mid_bars_in_slow.len() as f64);
+                    result.insert("sum_mid_trade_volume".to_string(), sum_volume);
+                    result.insert("sum_mid_ofi_net".to_string(), sum_ofi);
+                }
+            }
+        }
+        
+        result
     }
 
     fn extra_resolutions_ready(&self) -> bool {
@@ -266,6 +380,8 @@ impl RealtimePreprocessor {
                 if delta > self.session_reset_gap_ns {
                     self.extra_feature_cache.clear();
                     self.base_bar_count = 0;
+                    self.fast_bars_buffer.clear();
+                    self.mid_bars_buffer.clear();
                 }
             }
         }
