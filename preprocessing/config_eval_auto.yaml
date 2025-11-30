@@ -10,8 +10,8 @@ instrument:
   tick_size: 0.25
   venue: SIM
 io:
-  checkpoint_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\preprocessed_eval\.checkpoints
-  feature_output_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\preprocessed_eval
+  checkpoint_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\preprocessed\.checkpoints
+  feature_output_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\preprocessed
   input_path: C:\Users\timowilde\Documents\coding\ProjectAlpha\data\eval
 labeling:
   targets:

@@ -8,8 +8,9 @@
     "parquet": "python preprocessing/test/describe_parquet.py --input data/preprocessed/fast/20240610.parquet --output preprocessing/test/parquet-output.txt && python preprocessing/test/describe_parquet.py --input data/preprocessed/20240610.parquet --output preprocessing/test/parquet-labels-output.txt",
     "packages": "python -m pip install -r training/requirements.txt && python -m pip install -r deployment/requirements.txt",
     "training": "python training/tcn.py",
-    "realtime": "cd preprocessing && cargo run --bin realtime -- --resolutions fast --source C:/Ninjatrader/L2Log.txt --emit ../runs/realtime/features.jsonl --norm-state-dir ../data/preprocessed/.checkpoints/normalization/latest --session-gap-secs 900",
+    "realtime": "cd preprocessing && cargo run --bin realtime -- --resolutions fast,mid,slow --source C:/Ninjatrader/L2Log.txt --emit ../runs/realtime/features.jsonl --norm-state-dir ../data/preprocessed/.checkpoints/normalization/latest --session-gap-secs 900",
     "deployment": "cd deployment && python realtime_inference.py --model-bundle ../runs/models/best_model.pt --features ../runs/realtime/features.jsonl --resolutions fast --trade-threshold 0.80 --entry-price-feature mid_close_price --trigger-log-file ../runs/deployment/trade_triggers.jsonl --eval-trades-jsonl ../runs/deployment/trades.jsonl --pause-min-start 930 --pause-min-end 1080",
+    "deployment:simple": "cd deployment-simple && python simple_realtime_inference.py --model-bundle ../runs/models/best_model.pt --features ../runs/realtime/features.jsonl --trigger-hotkey CTRL+F11 --trigger-cooldown-global 600 --log-level INFO",
     "evaluation": "cargo build --manifest-path preprocessing/Cargo.toml && python evaluation/realtime_eval.py --sweep-config-yaml evaluation/sweep_config.yaml --reuse-existing-features --keep-features"
   },
   "engines": {
