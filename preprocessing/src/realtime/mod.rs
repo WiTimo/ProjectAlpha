@@ -313,10 +313,12 @@ impl RealtimePreprocessor {
         
         // H1: Aggregate fast bars into mid bars
         if self.has_mid {
-            // Find the mid bar that contains this fast bar
-            if let Some(mid_row) = self.mid_bars_buffer.iter()
-                .rfind(|m| m.start_ns <= fast_ts && fast_ts < m.end_ns) 
-            {
+            // Find the mid bar that contains this fast bar; if none, fall back to latest mid bar
+            let mid_opt = self.mid_bars_buffer
+                .iter()
+                .rfind(|m| m.start_ns <= fast_ts && fast_ts < m.end_ns)
+                .or_else(|| self.mid_bars_buffer.back());
+            if let Some(mid_row) = mid_opt {
                 // Find all fast bars within this mid bar's time range
                 let fast_bars_in_mid: Vec<_> = self.fast_bars_buffer.iter()
                     .filter(|f| f.start_ns >= mid_row.start_ns && f.start_ns < mid_row.end_ns)
@@ -342,12 +344,13 @@ impl RealtimePreprocessor {
         
         // H2: Aggregate mid bars into slow bars (if slow resolution is present)
         if self.has_slow {
-            // Find the slow bar that contains this fast bar
-            if let Some(slow_row) = self
+            // Find the slow bar that contains this fast bar; if none, fall back to latest slow bar
+            let slow_opt = self
                 .slow_bars_buffer
                 .iter()
                 .rfind(|s| s.start_ns <= fast_ts && fast_ts < s.end_ns)
-            {
+                .or_else(|| self.slow_bars_buffer.back());
+            if let Some(slow_row) = slow_opt {
                 // Collect mid bars within the slow bar window
                 let mid_bars_in_slow: Vec<_> = self
                     .mid_bars_buffer
