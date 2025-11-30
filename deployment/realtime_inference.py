@@ -490,8 +490,12 @@ def inference_loop(args: argparse.Namespace) -> None:
 
     # Wall-clock trigger timestamps for live mode (seconds)
     last_trigger_at_wall = {"up": 0.0, "down": 0.0}
+    # Global (any-direction) wall-clock trigger timestamp for live mode (seconds)
+    last_any_trigger_at_wall: float = 0.0
     # Data-time trigger timestamps for offline mode (nanoseconds)
     last_trigger_at_data: Dict[str, Optional[int]] = {"up": None, "down": None}
+    # Global (any-direction) data-time trigger timestamp for offline mode (nanoseconds)
+    last_any_trigger_at_data: Optional[int] = None
 
     last_entry_price: Dict[str, Optional[float]] = {"up": None, "down": None}
     last_entry_timestamp_ns: Optional[int] = None
@@ -703,16 +707,33 @@ def inference_loop(args: argparse.Namespace) -> None:
                             best_prob = down_prob_trigger
 
                         if best_prob >= args.trade_threshold and price_ok(best_dir):
-                            # Enforce a per-direction cooldown between triggers. In live
-                            # mode we use wall-clock time; in offline replay we use
-                            # data-time (ns) converted to seconds.
+                            # Global 10-minute cooldown between any hotkey emissions
+                            # inside this deployment, to avoid entering many times
+                            # for the same trade opportunity.
+                            GLOBAL_TRIGGER_COOLDOWN_SEC = 600.0
+
+                            # Enforce cooldown between triggers. In live mode we use
+                            # wall-clock time; in offline replay we use data-time
+                            # (ns) converted to seconds.
                             if args.replay_existing and current_ts_ns > 0:
+                                # Global (any direction) cooldown
+                                last_any_data = last_any_trigger_at_data or 0
+                                if current_ts_ns - last_any_data < int(GLOBAL_TRIGGER_COOLDOWN_SEC * 1e9):
+                                    continue
+
+                                # Per-direction cooldown
                                 last_data = last_trigger_at_data.get(best_dir) or 0
                                 if current_ts_ns - last_data < int(args.trigger_cooldown * 1e9):
                                     # Still inside cooldown window; skip this trigger.
                                     continue
                             else:
                                 now_wall = time.time()
+
+                                # Global (any direction) cooldown
+                                if now_wall - last_any_trigger_at_wall < GLOBAL_TRIGGER_COOLDOWN_SEC:
+                                    continue
+
+                                # Per-direction cooldown
                                 last_wall = last_trigger_at_wall.get(best_dir, 0.0)
                                 if now_wall - last_wall < float(args.trigger_cooldown):
                                     continue
@@ -733,8 +754,11 @@ def inference_loop(args: argparse.Namespace) -> None:
                                     )
                             if args.replay_existing and current_ts_ns > 0:
                                 last_trigger_at_data[best_dir] = current_ts_ns
+                                last_any_trigger_at_data = current_ts_ns
                             else:
-                                last_trigger_at_wall[best_dir] = time.time()
+                                now_wall = time.time()
+                                last_trigger_at_wall[best_dir] = now_wall
+                                last_any_trigger_at_wall = now_wall
                             last_entry_price[best_dir] = (
                                 price_val if np.isfinite(price_val) else last_entry_price[best_dir]
                             )
