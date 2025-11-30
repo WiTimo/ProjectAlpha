@@ -488,9 +488,10 @@ def inference_loop(args: argparse.Namespace) -> None:
         enable_triggers = False
         hotkey_emitter = None
 
-    # Wall-clock trigger timestamps for live mode (seconds)
+    # Wall-clock trigger timestamps for live mode (seconds). We keep per-direction
+    # fields for compatibility but enforce a global cooldown across directions.
     last_trigger_at_wall = {"up": 0.0, "down": 0.0}
-    # Data-time trigger timestamps for offline mode (nanoseconds)
+    # Data-time trigger timestamps for offline mode (nanoseconds).
     last_trigger_at_data: Dict[str, Optional[int]] = {"up": None, "down": None}
 
     last_entry_price: Dict[str, Optional[float]] = {"up": None, "down": None}
@@ -703,17 +704,18 @@ def inference_loop(args: argparse.Namespace) -> None:
                             best_prob = down_prob_trigger
 
                         if best_prob >= args.trade_threshold and price_ok(best_dir):
-                            # Enforce a per-direction cooldown between triggers. In live
-                            # mode we use wall-clock time; in offline replay we use
-                            # data-time (ns) converted to seconds.
+                            # Enforce a global cooldown between triggers across both
+                            # directions. In live mode we use wall-clock time; in
+                            # offline replay we use data-time (ns) converted to seconds.
                             if args.replay_existing and current_ts_ns > 0:
-                                last_data = last_trigger_at_data.get(best_dir) or 0
-                                if current_ts_ns - last_data < int(args.trigger_cooldown * 1e9):
+                                last_data_values = [v or 0 for v in last_trigger_at_data.values()]
+                                last_data = max(last_data_values) if last_data_values else 0
+                                if last_data and current_ts_ns - last_data < int(args.trigger_cooldown * 1e9):
                                     # Still inside cooldown window; skip this trigger.
                                     continue
                             else:
                                 now_wall = time.time()
-                                last_wall = last_trigger_at_wall.get(best_dir, 0.0)
+                                last_wall = max(last_trigger_at_wall.values()) if last_trigger_at_wall else 0.0
                                 if now_wall - last_wall < float(args.trigger_cooldown):
                                     continue
 
