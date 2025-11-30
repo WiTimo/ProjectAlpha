@@ -3,6 +3,7 @@ from typing import Optional
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from tqdm import tqdm
 import torch
 
 
@@ -11,29 +12,37 @@ def _collect_logistic_samples(loader, max_samples: int) -> Optional[tuple[np.nda
     labels: list[np.ndarray] = []
     collected = 0
 
-    for batch in loader:
-        if len(batch) == 3:
-            x, y, _ = batch
-        else:
-            x, y = batch
-        last_step = x[:, :, -1].detach().cpu().numpy()
-        batch_features = last_step.reshape(last_step.shape[0], -1)
-        raw_labels = y[:, 0].detach().cpu().numpy().astype(np.int64)
-        batch_labels = (raw_labels != 1).astype(np.int64)  # move vs flat
+    with tqdm(total=max_samples, desc="Collecting logistic samples", unit="sample") as pbar:
+        for batch in loader:
+            if len(batch) == 3:
+                x, y, _ = batch
+            else:
+                x, y = batch
+            last_step = x[:, :, -1].detach().cpu().numpy()
+            batch_features = last_step.reshape(last_step.shape[0], -1)
+            raw_labels = y[:, 0].detach().cpu().numpy().astype(np.int64)
+            batch_labels = (raw_labels != 1).astype(np.int64)
 
-        features.append(batch_features)
-        labels.append(batch_labels)
-        collected += len(batch_labels)
+            features.append(batch_features)
+            labels.append(batch_labels)
+            batch_size = len(batch_labels)
+            collected += batch_size
+            pbar.update(batch_size)
 
-        if collected >= max_samples:
-            break
+            if collected >= max_samples:
+                break
+
+        # If we exhausted the loader before reaching max_samples,
+        # adjust total so the bar ends at 100%.
+        if collected < max_samples:
+            pbar.total = collected
+            pbar.refresh()
 
     if not features:
         return None
 
     X = np.concatenate(features, axis=0)[:max_samples]
     y = np.concatenate(labels, axis=0)[:max_samples]
-    # y is already correctly converted to move vs flat (1=move, 0=flat).
     return X, y
 
 
@@ -55,12 +64,20 @@ def train_logistic_baseline(loader, config: dict) -> Optional[LogisticRegression
         logging.warning("Logistic baseline skipped: insufficient class diversity")
         return None
 
+    logging.info(
+        "Fitting logistic baseline on %d samples with %d features (max_iter=%d)...",
+        X.shape[0],
+        X.shape[1],
+        max_iter,
+    )
+
     model = LogisticRegression(
         C=C,
         max_iter=max_iter,
         solver=solver,
         random_state=random_state,
         class_weight="balanced",
+        verbose=1,
     )
     model.fit(X, y)
     # Remember which column represents the positive (move) class in predict_proba

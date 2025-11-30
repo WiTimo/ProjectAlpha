@@ -62,6 +62,15 @@ TIME_REGIME_COLUMNS = [
     "z_volatility",
 ]
 
+CROSS_RES_COLUMNS = [
+    "avg_fast_spread_abs",
+    "sum_fast_trade_volume",
+    "sum_fast_ofi_net",
+    "avg_mid_spread_abs",
+    "sum_mid_trade_volume",
+    "sum_mid_ofi_net",
+]
+
 PRESENCE_COLUMNS = [
     "bid_level_2_present",
     "bid_level_3_present",
@@ -80,12 +89,14 @@ PHASE4_FEATURE_COLUMNS = (
 PHASE5_FEATURE_COLUMNS = PHASE4_FEATURE_COLUMNS + OFI_COLUMNS + AGGRESSOR_COLUMNS
 PHASE6_FEATURE_COLUMNS = PHASE5_FEATURE_COLUMNS + ADV_VOL_IMPACT_COLUMNS
 PHASE7_FEATURE_COLUMNS = PHASE6_FEATURE_COLUMNS + TIME_REGIME_COLUMNS
+PHASE8_FEATURE_COLUMNS = PHASE7_FEATURE_COLUMNS + CROSS_RES_COLUMNS
 
 FEATURE_SET_COLUMNS = {
     "phase4": PHASE4_FEATURE_COLUMNS,
     "phase5": PHASE5_FEATURE_COLUMNS,
     "phase6": PHASE6_FEATURE_COLUMNS,
     "phase7": PHASE7_FEATURE_COLUMNS,
+    "phase8": PHASE8_FEATURE_COLUMNS,
 }
 
 PRICE_COLUMNS = ["mid_close_price", "mid_high_price", "mid_low_price"]

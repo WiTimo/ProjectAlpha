@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from src.utils import load_config, setup_logging
-from src.definitions import FEATURE_SET_COLUMNS, NUM_TARGET_CLASSES
+from src.definitions import FEATURE_SET_COLUMNS, NUM_TARGET_CLASSES, CROSS_RES_COLUMNS
 from src.data.loader import discover_feature_files, cache_streaming_files, compute_stats, standardize_entries
 from src.data.dataset import MultiResolutionSequenceDataset
 from src.model.network import DilatedTCN
@@ -94,22 +94,35 @@ def main():
 
     # 1. Setup Feature Columns
     feature_set = config['data']['feature_set']
-    base_cols = FEATURE_SET_COLUMNS[feature_set]
+    if feature_set == "phase8":
+        base_feature_set = "phase7"
+    else:
+        base_feature_set = feature_set
+
+    base_cols = FEATURE_SET_COLUMNS[base_feature_set]
     resolutions = config['data']['resolutions']
     lookahead_bars = int(config['training'].get('label_lookahead_bars', 0))
     
-    col_map: dict[str, list[str]] = {}
+    # Columns read from Parquet (raw) vs stored in cache (may include derived cross-resolution features).
+    col_map_read: dict[str, list[str]] = {}
+    col_map_store: dict[str, list[str]] = {}
     total_input_channels = 0
     for i, res in enumerate(resolutions):
-        col_map[res] = base_cols
-        total_input_channels += len(base_cols)
+        cols_read = base_cols
+        if i == 0 and feature_set == "phase8":
+            cols_store = base_cols + CROSS_RES_COLUMNS
+        else:
+            cols_store = base_cols
+        col_map_read[res] = cols_read
+        col_map_store[res] = cols_store
+        total_input_channels += len(cols_store)
 
     # Flattened feature column order used for both training and realtime inference:
     # base resolution uses raw names; higher resolutions use "@{res}" suffix.
     feature_columns: list[str] = []
     for idx, res in enumerate(resolutions):
         suffix = "" if idx == 0 else f"@{res}"
-        for col in col_map[res]:
+        for col in col_map_store[res]:
             name = f"{col}{suffix}"
             feature_columns.append(name)
 
@@ -129,8 +142,9 @@ def main():
         stems,
         config,
         resolutions,
-        col_map,
+        col_map_read,
         lookahead_bars=lookahead_bars if lookahead_bars > 0 else None,
+        store_cols_map=col_map_store,
     )
     logging.info(f"Successfully cached {len(entries)} files.")
     
@@ -179,7 +193,7 @@ def main():
         logging.info("Test stems: %s", ", ".join(test_stems))
 
     # 5. Standardize
-    stats = compute_stats(train_entries, resolutions, col_map)
+    stats = compute_stats(train_entries, resolutions, col_map_store)
     clip_value = float(config["data"].get("standardize_clip", 0.0))
     standardize_entries(entries, stats, clip_value=clip_value if clip_value > 0 else None)
 
@@ -191,7 +205,7 @@ def main():
             continue
         means_res, stds_res = stats[res]
         suffix = "" if idx == 0 else f"@{res}"
-        cols = col_map[res]
+        cols = col_map_store[res]
         for j, col in enumerate(cols):
             key = f"{col}{suffix}"
             scaler_means[key] = float(means_res[j])
@@ -208,7 +222,14 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=workers)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=workers)
 
-    logistic_model = train_logistic_baseline(train_loader, config)
+    eval_cfg = config.get("evaluation", {})
+    enable_logistic = bool(eval_cfg.get("enable_logistic_baseline", True))
+    logistic_model = None
+    if enable_logistic:
+        logging.info("Logistic baseline: enabled (will be trained on validation set).")
+        logistic_model = train_logistic_baseline(train_loader, config)
+    else:
+        logging.info("Logistic baseline: disabled via config; skipping baseline training.")
     trade_simulator = None
     if val_entries:
         trade_simulator = TradeSimulator(
@@ -246,7 +267,7 @@ def main():
         patience=1,
         min_lr=float(config['training'].get('min_learning_rate', 1e-5)),
     )
-    _run_alignment_diagnostics(val_loader, val_entries, resolutions, col_map)
+    _run_alignment_diagnostics(val_loader, val_entries, resolutions, col_map_store)
 
     total_counts = np.zeros(NUM_TARGET_CLASSES)
     for e in train_entries:
@@ -323,8 +344,8 @@ def main():
             best_auc = auc
             best_epoch = epoch
             patience_counter = 0
-            path = Path(config['paths']['model_export_dir']) / "best_model.pt"
-            path.parent.mkdir(parents=True, exist_ok=True)
+            best_path = Path(config['paths']['model_export_dir']) / "best_model.pt"
+            best_path.parent.mkdir(parents=True, exist_ok=True)
 
             bundle = {
                 "model_state_dict": model.state_dict(),
@@ -336,7 +357,7 @@ def main():
                     "stds": scaler_stds,
                 },
             }
-            torch.save(bundle, path)
+            torch.save(bundle, best_path)
             logging.info(f"--> New Best Model Saved (AUC: {best_auc:.4f})")
         else:
             patience_counter += 1
@@ -344,6 +365,31 @@ def main():
         scheduler.step(auc)
         current_lr = optimizer.param_groups[0]["lr"]
         logging.info(f"Epoch {epoch} complete | Val AUC: {auc:.4f} | LR now {current_lr:.2e}")
+
+        # Save per-epoch checkpoint so models are deployable after any epoch.
+        ckpt_dir = Path(config['paths']['checkpoint_dir'])
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = ckpt_dir / f"epoch_{epoch:03d}.pt"
+        ckpt_bundle = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "feature_columns": feature_columns,
+            "target_columns": [config['training']['target']],
+            "training": training_metadata,
+            "scaler": {
+                "means": scaler_means,
+                "stds": scaler_stds,
+            },
+            "metrics": {
+                "val_auc": float(auc),
+                "best_auc": float(best_auc),
+                "baseline_auc": float(baseline_auc) if baseline_auc is not None else None,
+            },
+        }
+        torch.save(ckpt_bundle, ckpt_path)
+        logging.info("Checkpoint saved: %s", ckpt_path)
 
         if baseline_auc is not None and not meets_baseline:
             below_baseline_epochs += 1

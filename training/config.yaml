@@ -9,9 +9,9 @@ paths:
 
 data:
   resolutions: ["fast", "mid", "slow"]
-  feature_set: "phase7"
+  feature_set: "phase8"
   # Maximum files to load (0 = all). Set to specific numbers (e.g., 100) for debugging/testing.
-  limit_files: 0
+  limit_files: 10
   # Clip standardized features to avoid extreme z-scores that can destabilize training.
   standardize_clip: 10.0
   # Splits
@@ -71,6 +71,7 @@ trade_simulation:
   tick_size: 0.25
 
 evaluation:
+  enable_logistic_baseline: false
   logistic_max_samples: 200000
   logistic_max_iter: 200
   logistic_C: 1.0

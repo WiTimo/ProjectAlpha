@@ -4,8 +4,8 @@ from pathlib import Path
 # ----------------------------------------------------------
 # CONFIGURATION
 # ----------------------------------------------------------
-BASE_DIR = r"C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\data"   # Change to your directory
-SIZE_LIMIT_BYTES = 50 * 1024           # 500 KB
+BASE_DIR = r"C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\data\\preprocessed"   # Change to your directory
+SIZE_LIMIT_BYTES = 10 * 1024           # 500 KB
 LOG_DELETIONS = True
 # ----------------------------------------------------------
 
