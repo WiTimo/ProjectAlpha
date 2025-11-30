@@ -70,7 +70,6 @@ pub struct RealtimePreprocessor {
     // Cross-resolution aggregate tracking
     fast_bars_buffer: VecDeque<CoreFeatureRow>,
     mid_bars_buffer: VecDeque<CoreFeatureRow>,
-    slow_bars_buffer: VecDeque<CoreFeatureRow>,
     tick_size: f64,
     has_mid: bool,
     has_slow: bool,
@@ -125,7 +124,6 @@ impl RealtimePreprocessor {
             last_base_end_ns: None,
             fast_bars_buffer: VecDeque::new(),
             mid_bars_buffer: VecDeque::new(),
-            slow_bars_buffer: VecDeque::new(),
             tick_size: cfg.tick_size,
             has_mid,
             has_slow,
@@ -242,12 +240,6 @@ impl RealtimePreprocessor {
                                 if self.mid_bars_buffer.len() > 20 {
                                     self.mid_bars_buffer.pop_front();
                                 }
-                            } else if resolution == Resolution::Slow {
-                                self.slow_bars_buffer.push_back(row.clone());
-                                // Keep only last 10 slow bars (~10 minutes)
-                                if self.slow_bars_buffer.len() > 10 {
-                                    self.slow_bars_buffer.pop_front();
-                                }
                             }
                         }
                     }
@@ -313,12 +305,10 @@ impl RealtimePreprocessor {
         
         // H1: Aggregate fast bars into mid bars
         if self.has_mid {
-            // Find the mid bar that contains this fast bar; if none, fall back to latest mid bar
-            let mid_opt = self.mid_bars_buffer
-                .iter()
-                .rfind(|m| m.start_ns <= fast_ts && fast_ts < m.end_ns)
-                .or_else(|| self.mid_bars_buffer.back());
-            if let Some(mid_row) = mid_opt {
+            // Find the mid bar that contains this fast bar
+            if let Some(mid_row) = self.mid_bars_buffer.iter()
+                .rfind(|m| m.start_ns <= fast_ts && fast_ts < m.end_ns) 
+            {
                 // Find all fast bars within this mid bar's time range
                 let fast_bars_in_mid: Vec<_> = self.fast_bars_buffer.iter()
                     .filter(|f| f.start_ns >= mid_row.start_ns && f.start_ns < mid_row.end_ns)
@@ -344,38 +334,28 @@ impl RealtimePreprocessor {
         
         // H2: Aggregate mid bars into slow bars (if slow resolution is present)
         if self.has_slow {
-            // Find the slow bar that contains this fast bar; if none, fall back to latest slow bar
-            let slow_opt = self
-                .slow_bars_buffer
-                .iter()
-                .rfind(|s| s.start_ns <= fast_ts && fast_ts < s.end_ns)
-                .or_else(|| self.slow_bars_buffer.back());
-            if let Some(slow_row) = slow_opt {
-                // Collect mid bars within the slow bar window
-                let mid_bars_in_slow: Vec<_> = self
-                    .mid_bars_buffer
-                    .iter()
-                    .filter(|m| m.start_ns >= slow_row.start_ns && m.start_ns < slow_row.end_ns)
+            // Find the slow bar that contains this fast bar's mid bar
+            if let Some(slow_cache) = self.extra_feature_cache.get(&Resolution::Slow) {
+                // The slow bar's timestamp is embedded in the cached features
+                // We need to find which mid bars belong to the current slow bar
+                // For now, aggregate the most recent mid bars (approximation)
+                let mid_bars_in_slow: Vec<_> = self.mid_bars_buffer.iter()
+                    .rev()
+                    .take(6) // Approximate: last 6 mid bars = ~60 seconds
                     .collect();
-
+                
                 if !mid_bars_in_slow.is_empty() {
-                    let sum_spread: f64 = mid_bars_in_slow
-                        .iter()
+                    let sum_spread: f64 = mid_bars_in_slow.iter()
                         .map(|m| m.spread_ticks * self.tick_size)
                         .sum();
-                    let sum_volume: f64 = mid_bars_in_slow
-                        .iter()
+                    let sum_volume: f64 = mid_bars_in_slow.iter()
                         .map(|m| m.trade_volume_sum_rel)
                         .sum();
-                    let sum_ofi: f64 = mid_bars_in_slow
-                        .iter()
+                    let sum_ofi: f64 = mid_bars_in_slow.iter()
                         .map(|m| m.ofi_net_log)
                         .sum();
-
-                    result.insert(
-                        "avg_mid_spread_abs".to_string(),
-                        sum_spread / mid_bars_in_slow.len() as f64,
-                    );
+                    
+                    result.insert("avg_mid_spread_abs".to_string(), sum_spread / mid_bars_in_slow.len() as f64);
                     result.insert("sum_mid_trade_volume".to_string(), sum_volume);
                     result.insert("sum_mid_ofi_net".to_string(), sum_ofi);
                 }
@@ -402,7 +382,6 @@ impl RealtimePreprocessor {
                     self.base_bar_count = 0;
                     self.fast_bars_buffer.clear();
                     self.mid_bars_buffer.clear();
-                    self.slow_bars_buffer.clear();
                 }
             }
         }

@@ -374,7 +374,6 @@ def inference_loop(args: argparse.Namespace) -> None:
             "up_hotkey": args.up_hotkey,
             "down_hotkey": args.down_hotkey,
             "entry_min_price_move": args.entry_min_price_move,
-            "entry_min_interval_secs": args.entry_min_interval_secs,
             "entry_price_feature": args.entry_price_feature,
             "idle_log_seconds": args.idle_log_seconds,
             "poll_interval": args.poll_interval,
@@ -570,34 +569,6 @@ def inference_loop(args: argparse.Namespace) -> None:
                 vector = standardize(payload["features"], feature_columns, means, stds)
                 window.append(vector)
 
-                # One-time diagnostics: verify feature alignment and presence
-                if rows_seen == 1:
-                    feat = payload["features"]
-                    present = sum(1 for c in feature_columns if c in feat)
-                    missing = [c for c in feature_columns if c not in feat]
-                    logging.info(
-                        "Feature alignment: model_cols=%d present=%d missing=%d",
-                        len(feature_columns),
-                        present,
-                        len(missing),
-                    )
-                    if missing:
-                        logging.warning(
-                            "First 15 missing cols: %s",
-                            ", ".join(missing[:15]),
-                        )
-                    # Quick check of cross-resolution aggregates
-                    cross_keys = [
-                        "avg_fast_spread_abs",
-                        "sum_fast_trade_volume",
-                        "sum_fast_ofi_net",
-                        "avg_mid_spread_abs",
-                        "sum_mid_trade_volume",
-                        "sum_mid_ofi_net",
-                    ]
-                    cross_present = {k: feat.get(k) for k in cross_keys}
-                    logging.info("Cross-res keys (sample): %s", cross_present)
-
                 logging.debug(
                     "Buffered rows=%d buffer=%d/%d",
                     rows_seen,
@@ -732,18 +703,10 @@ def inference_loop(args: argparse.Namespace) -> None:
                             best_prob = down_prob_trigger
 
                         if best_prob >= args.trade_threshold and price_ok(best_dir):
-                            # Enforce a minimum data-time interval between entries per direction
-                            # in addition to the short cooldown. Uses feature timestamps when available.
-                            interval_secs = float(getattr(args, "entry_min_interval_secs", 0.0) or 0.0)
-                            if interval_secs > 0 and current_ts_ns > 0:
-                                prev_entry_ns = last_trigger_at_data.get(best_dir) or None
-                                if prev_entry_ns is not None and (current_ts_ns - int(prev_entry_ns)) < int(interval_secs * 1e9):
-                                    # Within configured interval; skip this trigger
-                                    continue
                             # Enforce a per-direction cooldown between triggers. In live
                             # mode we use wall-clock time; in offline replay we use
                             # data-time (ns) converted to seconds.
-                            if current_ts_ns > 0:
+                            if args.replay_existing and current_ts_ns > 0:
                                 last_data = last_trigger_at_data.get(best_dir) or 0
                                 if current_ts_ns - last_data < int(args.trigger_cooldown * 1e9):
                                     # Still inside cooldown window; skip this trigger.
@@ -768,10 +731,10 @@ def inference_loop(args: argparse.Namespace) -> None:
                                         args.trade_threshold,
                                         price_val,
                                     )
-                            # Update both data-time and wall-clock markers when possible
-                            if current_ts_ns > 0:
+                            if args.replay_existing and current_ts_ns > 0:
                                 last_trigger_at_data[best_dir] = current_ts_ns
-                            last_trigger_at_wall[best_dir] = time.time()
+                            else:
+                                last_trigger_at_wall[best_dir] = time.time()
                             last_entry_price[best_dir] = (
                                 price_val if np.isfinite(price_val) else last_entry_price[best_dir]
                             )
@@ -1119,15 +1082,6 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Minimum absolute mid-price move (in price units, e.g. $) since the last entry "
             "in a given direction before allowing a new hotkey. 0 disables price-based gating."
-        ),
-    )
-    parser.add_argument(
-        "--entry-min-interval-secs",
-        type=float,
-        default=600.0,
-        help=(
-            "Minimum interval in seconds between entries in the same direction, based on data timestamps. "
-            "Set to 0 to disable. Applied in addition to --trigger-cooldown."
         ),
     )
     parser.add_argument(
