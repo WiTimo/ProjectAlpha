@@ -1,0 +1,3 @@
+apt-get update && apt-get install git-all p7zip-full nodejs npm nano -y && pip install scikit-learn matplotlib --extra-index-url=https://pypi.nvidia.com "cudf-cu12==25.4.*" "dask-cudf-cu12==25.4.*" "cuml-cu12==25.4.*" "cugraph-cu12==25.4.*" "nx-cugraph-cu12==25.4.*" "cuspatial-cu12==25.4.*" "cuproj-cu12==25.4.*" "cuxfilter-cu12==25.4.*" "cucim-cu12==25.4.*" "pylibraft-cu12==25.4.*" "raft-dask-cu12==25.4.*" "cuvs-cu12==25.4.*" "nx-cugraph-cu12==25.4.*"
+
+7z x data.7z

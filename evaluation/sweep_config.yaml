@@ -56,9 +56,6 @@
 
 
 combinations:
-  - threshold: 0.70
+  - threshold: 0.90
     take_profit: 10.0
     stop_loss: 10.0
-  - threshold: 0.70
-    take_profit: 40.0
-    stop_loss: 40.0
