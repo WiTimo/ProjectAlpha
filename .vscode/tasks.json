@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build realtime (with cross-res fix)",
+			"type": "shell",
+			"command": "cd preprocessing && cargo build --bin realtime",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
