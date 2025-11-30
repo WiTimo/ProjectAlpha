@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-dir",
         type=Path,
-        default=REPO_ROOT / "data" / "eval",
+        default=REPO_ROOT / "data" / "eval2",
         help="Directory with NinjaTrader-style raw CSV files to replay",
     )
     parser.add_argument(
