@@ -1,0 +1,10 @@
+[
+  {
+    "threshold": 0.9,
+    "take_profit": 10.0,
+    "stop_loss": 10.0,
+    "log_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_125309_thr0p90_tp10p0_sl10p0.jsonl",
+    "summary_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_125309_thr0p90_tp10p0_sl10p0_summary.json",
+    "trades_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_125309_thr0p90_tp10p0_sl10p0_trades.jsonl"
+  }
+]

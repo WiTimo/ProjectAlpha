@@ -1,0 +1,34 @@
+[
+  {
+    "threshold": 0.9,
+    "take_profit": 20.0,
+    "stop_loss": 20.0,
+    "log_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp20p0_sl20p0.jsonl",
+    "summary_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp20p0_sl20p0_summary.json",
+    "trades_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp20p0_sl20p0_trades.jsonl"
+  },
+  {
+    "threshold": 0.9,
+    "take_profit": 30.0,
+    "stop_loss": 30.0,
+    "log_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp30p0_sl30p0.jsonl",
+    "summary_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp30p0_sl30p0_summary.json",
+    "trades_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp30p0_sl30p0_trades.jsonl"
+  },
+  {
+    "threshold": 0.9,
+    "take_profit": 40.0,
+    "stop_loss": 40.0,
+    "log_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp40p0_sl40p0.jsonl",
+    "summary_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp40p0_sl40p0_summary.json",
+    "trades_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp40p0_sl40p0_trades.jsonl"
+  },
+  {
+    "threshold": 0.9,
+    "take_profit": 5.0,
+    "stop_loss": 5.0,
+    "log_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp5p0_sl5p0.jsonl",
+    "summary_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp5p0_sl5p0_summary.json",
+    "trades_path": "C:\\Users\\timowilde\\Documents\\coding\\ProjectAlpha\\runs\\evaluation\\offline_eval_20251130_133737_thr0p90_tp5p0_sl5p0_trades.jsonl"
+  }
+]

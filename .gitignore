@@ -1,9 +1,7 @@
 /data/**/*.csv
 /data/**/*.parquet
-/data/**/.checkpoints/*
 /runs/cache/**/*.npy
 /runs/cache_eval/**/*.npy
 /runs/**/*.jsonl
 **/features.jsonl
 /**/*.7z
-/runs/checkpoints/*
