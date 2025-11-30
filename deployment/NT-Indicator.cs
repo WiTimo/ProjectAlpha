@@ -27,7 +27,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Calculate = Calculate.OnEachTick;
                 IsSuspendedWhileInactive = true;
 
-                FilePath = "C:\\_L2Log.txt";
+                FilePath = "C:\\Ninjatrader\\L2Log.txt";
             }
             else if (State == State.DataLoaded)
             {
