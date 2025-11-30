@@ -570,6 +570,34 @@ def inference_loop(args: argparse.Namespace) -> None:
                 vector = standardize(payload["features"], feature_columns, means, stds)
                 window.append(vector)
 
+                # One-time diagnostics: verify feature alignment and presence
+                if rows_seen == 1:
+                    feat = payload["features"]
+                    present = sum(1 for c in feature_columns if c in feat)
+                    missing = [c for c in feature_columns if c not in feat]
+                    logging.info(
+                        "Feature alignment: model_cols=%d present=%d missing=%d",
+                        len(feature_columns),
+                        present,
+                        len(missing),
+                    )
+                    if missing:
+                        logging.warning(
+                            "First 15 missing cols: %s",
+                            ", ".join(missing[:15]),
+                        )
+                    # Quick check of cross-resolution aggregates
+                    cross_keys = [
+                        "avg_fast_spread_abs",
+                        "sum_fast_trade_volume",
+                        "sum_fast_ofi_net",
+                        "avg_mid_spread_abs",
+                        "sum_mid_trade_volume",
+                        "sum_mid_ofi_net",
+                    ]
+                    cross_present = {k: feat.get(k) for k in cross_keys}
+                    logging.info("Cross-res keys (sample): %s", cross_present)
+
                 logging.debug(
                     "Buffered rows=%d buffer=%d/%d",
                     rows_seen,
