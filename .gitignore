@@ -5,3 +5,4 @@
 /runs/cache_eval/**/*.npy
 /runs/**/*.jsonl
 **/features.jsonl
+/**/*.7z
