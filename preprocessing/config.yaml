@@ -5,7 +5,7 @@ instrument:
   levels: 5
 
 io:
-  input_path: "../data/raw"
+  input_path: "D:\\Ninjatrader_Market_Data\\csv"
   feature_output_path: "../data/preprocessed"
   checkpoint_path: "../data/preprocessed/.checkpoints"
 

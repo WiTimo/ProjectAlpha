@@ -4,7 +4,7 @@ from pathlib import Path
 # ----------------------------------------------------------
 # CONFIGURATION
 # ----------------------------------------------------------
-BASE_DIR = r"D:\\Ninjatrader_Market_Data\\csv"  # Change this to your root folder
+BASE_DIR = r"D:\\Ninjatrader_Market_Data\\NQ"  # Change this to your root folder
 LOG_DELETIONS = True
 # ----------------------------------------------------------
 
