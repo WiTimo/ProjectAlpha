@@ -1,5 +1,5 @@
 # Project Alpha
-
+ 
 Project Alpha is a research-grade machine learning pipeline for short-horizon NQ futures direction prediction using NinjaTrader tick/L2 market data. The project combines a high-performance Rust preprocessing engine with Python-based model training, evaluation, and real-time inference tooling.
 
 The core idea is to move expensive market-data processing into Rust, export clean multi-resolution Parquet datasets, and keep Python focused on sequence construction, model training, and experiment analysis.
