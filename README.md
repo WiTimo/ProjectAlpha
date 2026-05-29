@@ -1,151 +1,213 @@
-# Alpha Model
+# Project Alpha
 
-This repository contains the implementation of the Alpha Model, a machine learning project for tick-data-based predictions on the NQ market. It uses a Rust-based preprocessing pipeline for high-performance feature engineering and a Python-based training environment for model development.
+Project Alpha is a research-grade machine learning pipeline for short-horizon NQ futures direction prediction using NinjaTrader tick/L2 market data. The project combines a high-performance Rust preprocessing engine with Python-based model training, evaluation, and real-time inference tooling.
 
-## Repository Structure
+The core idea is to move expensive market-data processing into Rust, export clean multi-resolution Parquet datasets, and keep Python focused on sequence construction, model training, and experiment analysis.
 
--   `data/`: Default location for all data.
-    -   `raw/`: Input data.
-    -   `preprocessed/`: Output from the preprocessing pipeline.
--   `deployment/`: Real-time inference implementation.
--   `docs/`: Project documentation.
--   `preprocessing/`: The Rust-based feature engineering pipeline.
--   `training/`: The Python-based model training scripts.
--   `runs/`: Default location for model artifacts and logs.
+## Repository description
 
-## Getting Started
+**Multi-resolution NQ futures ML research pipeline using Rust preprocessing, Parquet feature stores, and Python TCN training for short-horizon market-direction experiments.**
+
+## Project status
+
+This is a market microstructure research project, not a production trading product. It is designed to test whether L2/tick-derived features can produce useful short-horizon signals under realistic constraints. No profitability is implied by the repository.
+
+## What it does
+
+- Parses NinjaTrader tick/L2 CSV exports.
+- Reconstructs market state and derives microstructure features.
+- Builds multiple time resolutions: fast, mid, and slow.
+- Creates first-touch labels for different target horizons.
+- Exports feature datasets as Parquet.
+- Trains a multi-resolution TCN-style model in Python.
+- Includes scripts for offline evaluation and real-time feature/inference workflows.
+
+## Why this project matters
+
+Project Alpha demonstrates practical ML engineering for noisy, high-volume time-series data:
+
+- **Performance engineering:** Rust handles heavy preprocessing, normalization, labeling, and feature generation.
+- **Data architecture:** Parquet outputs separate preprocessing from training and make experiments repeatable.
+- **Multi-scale modeling:** fast, mid, and slow streams allow the model to see microstructure and broader regime context.
+- **Config-driven workflows:** preprocessing, training, evaluation, and deployment behavior are controlled through YAML and npm scripts.
+- **Research discipline:** labels, splits, normalization, and evaluation are explicit instead of hidden inside ad-hoc notebooks.
+
+## High-level architecture
+
+```text
+NinjaTrader CSV exports
+        ↓
+Rust preprocessing engine
+        ↓
+Cleaned market state + engineered features
+        ↓
+Multi-resolution Parquet datasets
+        ↓
+Python training pipeline
+        ↓
+TCN model + evaluation artifacts
+        ↓
+Optional real-time feature stream and inference tooling
+```
+
+## Tech stack
+
+| Area | Technology |
+|---|---|
+| Preprocessing | Rust |
+| Training | Python |
+| Model family | Temporal Convolutional Network / multi-scale sequence model |
+| Data format | Parquet |
+| Configuration | YAML |
+| Data source | NinjaTrader tick/L2 CSV exports |
+| Orchestration | npm scripts for repeatable commands |
+
+## Repository structure
+
+```text
+ProjectAlpha/
+├── data/
+│   ├── raw/                    # Raw NinjaTrader CSV exports
+│   └── preprocessed/           # Generated Parquet features and checkpoints
+├── preprocessing/              # Rust feature engineering and realtime processing
+│   └── config.yaml             # Preprocessing configuration
+├── training/                   # Python training code and model config
+│   └── config.yaml             # Training configuration
+├── evaluation/                 # Offline evaluation and sweep tooling
+├── deployment/                 # Realtime inference tooling
+├── deployment-simple/          # Simplified realtime trigger flow
+├── runs/                       # Generated models, logs, caches, and inference output
+├── package.json                # Common commands
+└── README.md
+```
+
+## Data assumptions
+
+The pipeline expects NinjaTrader-style L2/tick CSV data, typically exported or converted into rows containing:
+
+1. Market data type: bid, ask, last, etc.
+2. Timestamp in `YYYYMMDDhhmmss` format.
+3. Timestamp offset in 100-nanosecond units.
+4. Operation: add, update, remove.
+5. Order book position.
+6. Market maker identifier.
+7. Price.
+8. Volume.
+
+The project is configured around NQ futures with a `0.25` tick size.
+
+## Preprocessing
+
+The Rust preprocessing pipeline is responsible for:
+
+- Cleaning and standardizing raw tick/L2 records.
+- Reconstructing bid/ask depth state.
+- Building time-based bars at multiple resolutions.
+- Computing feature groups such as:
+  - top-of-book values
+  - depth and liquidity features
+  - order-flow features
+  - trade features
+  - volatility features
+  - time-of-day encodings
+  - regime/context features
+- Generating first-touch labels such as `t20`, `t40`, `t60`, and `t100`.
+- Saving Parquet files for downstream training.
+
+Default resolutions:
+
+| Resolution | Bar size | Purpose |
+|---|---:|---|
+| `fast` | 1 second | Microstructure and immediate order-flow behavior |
+| `mid` | 10 seconds | Intermediate context |
+| `slow` | 60 seconds | Broader regime context |
+
+Run preprocessing:
+
+```bash
+npm run preprocessing
+```
+
+## Training
+
+The Python training pipeline loads the generated Parquet files and trains a sequence model using fast, mid, and slow feature streams.
+
+The default training target is `t40`, representing a 40-tick first-touch direction label. Configuration lives in:
+
+```text
+training/config.yaml
+```
+
+Run training:
+
+```bash
+npm run training
+```
+
+The training config controls:
+
+- feature roots
+- target label
+- sequence length
+- batch size
+- learning rate
+- early stopping
+- TCN architecture
+- threshold sweeps
+- trade-simulation parameters
+- device settings
+
+## Evaluation and real-time workflow
+
+Project Alpha includes scripts for:
+
+- Offline evaluation sweeps.
+- Real-time feature generation from a live NinjaTrader log file.
+- Realtime inference using a saved model bundle.
+- Simplified hotkey-style trigger workflows for experimentation.
+
+Example commands from `package.json`:
+
+```bash
+npm run realtime
+npm run deployment
+npm run deployment:simple
+npm run evaluation
+```
+
+These workflows should be treated as research tooling and require careful validation before any live use.
+
+## Installation
 
 ### Prerequisites
 
--   **Rust:** The preprocessing pipeline is written in Rust. Install it via [rustup](https://rustup.rs/).
--   **Python:** The training scripts use Python. Tested with Python 3.10+.
--   **NodeJS:** For the script running via [NPM](https://nodejs.org/en/download) (technically not needed, you could also just run the commands plain)
--   **NinjaTrader Data:** The pipeline expects raw tick data exported from NinjaTrader. The data could be aquired for example from [here (40$)](https://www.priceisking.com/products/market-replay-data-for-ninjatrader-8?srsltid=AfmBOoqr37TAUJuwkuNPos1J1iOCdTosOf2WZJXQEtTYnOe_f2E-J8Dv&variant=35316803338395) or directly through [Ninjatrader (free)](https://ninjatrader.com/support/helpguides/nt8/NT%20HelpGuide%20English.html?set_up12.htm) (only last 90 days) and then converted to .csv using [this](https://github.com/eugeneilyin/nrdtocsv).
+- Rust via `rustup`
+- Python 3.10+
+- Node.js 14+ for npm script orchestration
+- NinjaTrader tick/L2 data exported or converted to CSV
 
-### Installation
+### Install Python dependencies
 
-1.  **Set up the Python environment:**
-    ```bash
-    npm run packages
-    ```
+```bash
+npm run packages
+```
 
-## Workflow
+### Prepare data
 
-### 1. Data Preparation
+Place raw CSV files in the configured raw data directory. The default paths are defined in:
 
-The preprocessing pipeline expects raw Ninjatrader L2 data in CSV format, without a header. The data should be placed in `data/raw/`.
+```text
+preprocessing/config.yaml
+training/config.yaml
+```
 
-The expected CSV columns are (default from [this export](https://github.com/eugeneilyin/nrdtocsv)):
-1.  `MarketDataType`: (0: Ask, 1: Bid, 2: Last, ...)
-2.  `Timestamp`: `YYYYMMDDhhmmss` format.
-3.  `Timestamp offset`: in 100-nanosecond units.
-4.  `Operation`: (0: Add, 1: Update, 2: Remove)
-5.  `Position`: Order book position.
-6.  `MarketMaker`: Market maker identifier.
-7.  `Price`: Price value.
-8.  `Volume`: Volume value.
+Then run:
 
+```bash
+npm run preprocessing
+npm run training
+```
 
-### 2. Preprocessing
+## Recruiter notes
 
-The Rust pipeline processes the raw data into feature-rich Parquet files.
-
-1.  **Configure:** Edit `preprocessing/config.yaml` to match your setup. The default configuration is a good starting point. You can specify input/output paths, resolutions, and other parameters.
-
-2.  **Run:**
-    ```bash
-    npm run preprocessing
-    ```
-    You can also specify a different config file: `npm run preprocessing --config /path/to/your/config.yaml`
-
-    The output will be saved to the `feature_output_path` defined in your config (by default `data/preprocessed/`).
-
-### 3. Training
-
-The Python scripts train a Temporal Convolutional Network (TCN) on the preprocessed features.
-
-1.  **Configure:** Edit `training/config.yaml`. Here you can define paths, data parameters, model hyperparameters, and training settings.
-
-2.  **Run:**
-    ```bash
-    npm run training
-    ```
-    The script uses the settings from `training/config.yaml` to load data, build the model, and run the training process. Model artifacts will be saved to the directories specified in the config file (by default under `runs/`).
-
-## Configuration
-
-### Preprocessing (`preprocessing/config.yaml`)
-
-This file controls the Rust preprocessing pipeline. Key sections:
--   `instrument`: Instrument metadata (symbol, tick size, etc.).
--   `io`: Input and output paths.
--   `resolutions`: Configuration for different time resolutions (fast, mid, slow).
--   `normalization`: Parameters for rolling window normalizers.
--   `labeling`: Specification for target labels.
--   `data_split`: Ratios for train/validation/test splits.
-
-### Training (`training/config.yaml`)
-
-This file controls the Python training process. Key sections:
--   `paths`: Paths for data, models, and checkpoints.
--   `data`: Parameters for data loading and feature selection.
--   `training`: Training hyperparameters (batch size, epochs, learning rate, etc.).
--   `model`: TCN model architecture.
--   `chunking`: Configuration for memory-aware chunk-based training.
-
-## Overview
-
-**Goal:**
-Predict short-horizon price direction in a market where “time to move” varies (sometimes seconds, sometimes many minutes), using a single multi-scale neural network with minimal Python-side work.
-
-**Core modeling idea:**
-
-1.  **Define labels in event/price space, not fixed clock time:**
-    – Example: label = 1 if price hits `+X ticks` before `−Y ticks` within the next `K` events/bars; label = 0 otherwise. (Default 10 pips / 40 ticks in each direction)
-    – This makes targets more stable across fast vs slow markets.
-
-2.  **Use a single multi-scale model (multi-branch TCN):**
-    – Branch for high resolution (microstructure, fast patterns).
-    – Branch for medium resolution (intermediate patterns).
-    – Branch for low resolution (trend/regime context).
-    – Outputs from all branches are concatenated and passed to a shared dense + sigmoid head that predicts a single probability in (0,1).
-
-**Preprocessing approach (three resolutions precomputed in Rust):**
-Do the heavy lifting in Rust, then keep Python thin:
-
-1.  **In Rust (one main pipeline + parameterized resampling):**
-    a) Clean and standardize raw tick data into a canonical format (trades/quotes, midprice, spread, etc.).
-    b) Build multiple bar streams at different resolutions, e.g.:
-    – `fast` : 1-second (or small event-based) bars
-    – `mid` : 10-second bars
-    – `slow` : 60-second bars
-    c) For each resolution, compute features:
-    – returns, rolling volatility, volume, spread, imbalance, etc.
-    d) Define labels once using your chosen event-based rule (“hit +X before −Y within K events from time t”).
-    – Ensure each bar stream gets aligned labels that refer to the same decision time t.
-    e) Save as three Parquet files (Pattern A):
-    – `data_fast.parquet`
-    – `data_mid.parquet`
-    – `data_slow.parquet`
-    Each with: `timestamp/index`, features for that resolution, and `label`.
-
-2.  **In Python (minimal work):**
-    a) Load the three Parquet files.
-    b) Align rows across resolutions by timestamp/index so each training sample has:
-    – a window from the fast series,
-    – a window from the mid series,
-    – a window from the slow series,
-    – and a single label.
-    c) Convert these into tensors:
-    – `X_fast : (batch, L_fast, F_fast)`
-    – `X_mid  : (batch, L_mid, F_mid)`
-    – `X_slow : (batch, L_slow, F_slow)`
-    – `y      : (batch,)`
-    d) Feed them into the multi-branch CNN/TCN model and train.
-
-**Result:**
-You end up with:
-
--   A single multi-scale neural network that outputs one probability (up vs down) and is robust to fast and slow markets.
--   Most complexity (cleaning, feature construction, multi-resolution resampling, labeling) lives in Rust.
--   Python is mainly a thin layer: load Parquet → build windows → train/evaluate the model.
+Project Alpha is a strong technical portfolio project because it shows end-to-end ML systems thinking: high-throughput Rust preprocessing, explicit feature engineering, Parquet-based dataset design, sequence modeling, configuration management, evaluation tooling, and real-time inference experiments. It also demonstrates awareness of market-data leakage risks, label design, and the difference between research signals and production trading readiness.
